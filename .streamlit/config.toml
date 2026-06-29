@@ -1,5 +1,6 @@
 [server]
-port = 8502
+# ไม่ตั้ง port ตายตัว — Streamlit Cloud จัดการพอร์ต/health check เอง (8501)
+# (ตอนรัน local ถ้าต้องการพอร์ต 8502 ให้ใส่ --server.port 8502 ใน start_siteassess.bat)
 maxUploadSize = 200
 enableWebsocketCompression = false
 # แอปถูกฝังใน iframe ของ GAS (cross-origin) → ต้องปิด XSRF/CORS
