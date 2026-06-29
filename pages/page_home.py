@@ -307,7 +307,9 @@ def show():
 
         if projects_all:
             st.markdown("---")
-            st.caption(f"📂 งานทั้งหมด: **{len(projects_all)} งาน** — บันทึกใน `aqualine_projects/`")
+            from utils.storage import _drive_storage_on
+            _loc = "Google Drive (_drafts)" if _drive_storage_on() else "aqualine_projects/"
+            st.caption(f"📂 งานทั้งหมด: **{len(projects_all)} งาน** — บันทึกใน `{_loc}`")
 
 
 def _render_project_card(p: dict):

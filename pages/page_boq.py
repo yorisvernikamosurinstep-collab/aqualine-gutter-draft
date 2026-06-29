@@ -2,6 +2,7 @@
 หน้า 4 — BOQ / ใบเสนอราคา (Quotation Form)
 [Architecture: 1:1 Template EX-01 Clone + Dynamic Pricing + Native Blueprint Engine]
 """
+import sys
 import streamlit as st
 from pages.page_login import touch_session
 from utils.ui_notify import toast, save_with_feedback
@@ -94,9 +95,10 @@ def export_blueprint_images(project: dict, svg_items: list) -> tuple:
                 try:
                     _browser = _pw.chromium.launch()
                 except Exception as _le:
-                    if "Executable doesn't exist" in str(_le):
+                    _le_s = str(_le)
+                    if "Executable doesn't exist" in _le_s or "executable" in _le_s.lower() or "not found" in _le_s.lower():
                         import subprocess as _sp
-                        _sp.run(["python", "-m", "playwright", "install", "chromium"], check=True)
+                        _sp.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
                         _browser = _pw.chromium.launch()
                     else:
                         raise
