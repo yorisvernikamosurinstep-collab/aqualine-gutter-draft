@@ -1,0 +1,14 @@
+# อย่า commit ความลับ (ใส่ใน Streamlit Cloud → Settings → Secrets แทน)
+.streamlit/secrets.toml
+
+# งานในเครื่อง / ขยะ
+aqualine_projects/
+__pycache__/
+*.pyc
+seen_jobs.json
+*_debug.txt
+api_debug.txt
+sso_debug.txt
+_*.html
+_*.png
+_*.py

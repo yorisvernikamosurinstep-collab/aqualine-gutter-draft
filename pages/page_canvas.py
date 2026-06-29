@@ -1,0 +1,2553 @@
+"""
+หน้า 2 — วาดแบบหน้าตัด
+(เวอร์ชันแก้ปัญหา Canvas หาย + ใช้ Streamlit Custom Component Bridge)
+"""
+import streamlit as st
+from pages.page_login import touch_session
+import json
+import os
+import streamlit.components.v1 as components
+from utils.state import get_project
+from utils.storage import save_project
+
+def show():
+    touch_session()
+    p = get_project()
+    if p is None:
+        st.warning("⚠️ กรุณาเลือกหรือสร้างโปรเจกต์ก่อนครับ")
+        if st.button("ไปหน้าโปรเจกต์"):
+            st.session_state.current_page = "home"
+            st.rerun()
+        return
+
+    st.markdown('<div class="page-title">✏️ วาดแบบหน้าตัด และ แปลนด้านข้างท่อลง</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="page-subtitle">โปรเจกต์: {p["name"]} — '
+        f'Grid 1 ช่อง = 1 เมตร | วาด "ทรงบ้าน" ให้ครบรอบ (จุดบรรจบกัน) ก่อนวาดรางน้ำ (ดึงมุมเพื่อขยับทรงบ้านได้)</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── ส่วนของ HTML และ JS (ปรับปรุงระบบบันทึกข้อมูลใหม่) ──
+    canvas_html = r"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+/* CSS เดิมของคุณทั้งหมด */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #F0F4FF; font-family: 'Sarabun', 'Arial', sans-serif; overflow: hidden; height: 100vh; }
+#app-wrapper { display: flex; flex-direction: row; height: 100vh; overflow: hidden; }
+#left-column { flex: 1; display: flex; flex-direction: column; overflow-y: auto; background: #F0F4FF; }
+#boq-panel { width: 300px; min-width: 300px; background: #FFFFFF; overflow-y: auto; padding: 15px; border-left: 2px solid #C8D5F0; flex-shrink: 0; user-select: none; }
+#main-container { height: 700px; min-height: 350px; display: flex; flex-direction: column; border-bottom: 3px solid #C8D5F0; flex-shrink: 0; position: relative; }
+#resize-handle { width: 100%; height: 10px; background: linear-gradient(to bottom, #C8D5F050, #1E3A8A40); cursor: ns-resize; flex-shrink: 0; display: flex; align-items: center; justify-content: center; user-select: none; }
+#resize-handle:hover { background: #1E3A8A55; }
+#resize-handle::after { content: '▪ ▪ ▪'; color: #6B7A99; font-size: 10px; letter-spacing: 4px; }
+#subs-header { padding: 20px 20px 5px 20px; font-size: 18px; font-weight: bold; color: #0D2144; flex-shrink: 0; }
+#iso3d-panel { background:#0A1628; border-top:3px solid #1E3A8A; flex-shrink:0; }
+#iso3d-header { display:flex; align-items:center; gap:10px; padding:6px 14px; background:#0D2144; color:#FCD34D; font-size:13px; font-weight:700; }
+#iso3d-header button { padding:3px 9px; border-radius:5px; border:1.5px solid rgba(255,255,255,0.3); background:rgba(255,255,255,0.1); color:white; font-size:11px; cursor:pointer; }
+#iso3d-header button:hover { background:rgba(255,255,255,0.22); }
+#c3d { display:block; cursor:grab; width:100%; height:520px; }
+#c3d:active { cursor:grabbing; }
+#subs-container { display: flex; flex-wrap: wrap; gap: 20px; padding: 15px 20px; flex-shrink: 0; padding-bottom: 40px; }
+.sub-wrap { width: calc(50% - 10px); height: 850px; display: flex; flex-direction: column; background: white; border: 2px solid #C8D5F0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05); position: relative; }
+.sub-elbow-summary { background: #0A1628; color: #FCD34D; font-size: 12px; font-weight: 700; padding: 4px 10px; display: flex; gap: 16px; align-items: center; flex-shrink: 0; border-top: 1px solid #1E3A8A; }
+.sub-elbow-summary span { color: #93C5FD; font-weight: 400; }
+.sub-elbow-summary b { color: #FCD34D; }
+.sub-header { padding: 8px 12px; background: #1E3A8A; color: white; font-weight: bold; font-size: 14px; }
+.toolbar { display: flex; gap: 5px; padding: 7px 10px; background: #0A1628; align-items: center; flex-wrap: wrap; flex-shrink: 0; }
+.tool-btn { padding: 4px 11px; border-radius: 6px; border: 1.5px solid transparent; cursor: pointer; font-size: 13px; font-weight: 600; background: rgba(255,255,255,0.12); color: white; transition: all 0.15s; }
+.tool-btn:hover { background: rgba(255,255,255,0.22); }
+.tool-btn.active { background: white; color: #0D2144; border-color: white; }
+.sep { width:1px; height:22px; background:rgba(255,255,255,0.2); margin:0 2px; }
+.snap-btn { padding: 4px 9px; border-radius: 5px; border: 1.5px solid rgba(255,255,255,0.35); cursor: pointer; font-size: 12px; font-weight: 600; background: transparent; color: #B8C9E8; }
+.snap-btn.active { background:#FCD34D; color:#0D2144; border-color:#FCD34D; }
+.snap-box { display: flex; align-items: center; gap: 4px; background: rgba(255,255,255,0.1); border-radius: 6px; padding: 3px 7px; margin-left: auto; }
+.zoom-box { position: absolute; bottom: 35px; right: 12px; z-index: 99; display: flex; align-items: center; gap: 4px; background: #0A1628; border-radius: 6px; padding: 4px 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); border: 1px solid rgba(255,255,255,0.15); }
+.zoom-box button { background:rgba(255,255,255,0.18); border:none; color:white; font-size:16px; font-weight:bold; cursor:pointer; border-radius:4px; width:26px; height:26px; }
+.zoom-box button:hover { background:rgba(255,255,255,0.32); }
+.zoom-label { color:white; font-size:12px; min-width:40px; text-align:center; }
+.canvas-wrap { flex:1; overflow:auto; background:#FAFBFF; cursor:crosshair; position:relative; }
+.canvas-wrap.move-mode { cursor:grab; }
+.canvas-wrap.move-mode.moving { cursor:grabbing; }
+.save-btn { padding: 4px 14px; border-radius: 6px; border: 1.5px solid #4ADE80; cursor: pointer; font-size: 13px; font-weight: 700; background: rgba(74,222,128,0.18); color: #4ADE80; transition: all 0.15s; }
+.save-btn:hover { background: #4ADE80; color: #0D2144; }
+canvas { display:block; }
+.status { background:#E8EEFF; color:#374151; font-size:12px; padding:4px 12px; display:flex; gap:16px; flex-shrink:0; border-top:1px solid #C8D5F0; font-weight:bold; }
+.snap-indicator { position:absolute; top:8px; left:50%; transform:translateX(-50%); background:rgba(13,33,68,0.75); color:#FCD34D; font-size:13px; font-weight:700; padding:4px 12px; border-radius:20px; pointer-events:none; opacity:0; transition:opacity 0.4s; }
+.snap-indicator.show { opacity:1; }
+#boq-panel h4 { font-size:15px; font-weight:700; color:#0D2144; margin-bottom:8px; padding-bottom:8px; border-bottom:2px solid #1E3A8A; }
+.boq-sec { font-size:12px; font-weight:700; color:#6B7A99; text-transform:uppercase; letter-spacing:1px; margin:12px 0 6px 0; }
+.boq-row { display:flex; justify-content:space-between; font-size:13.5px; padding:6px 0; border-bottom:1px solid #EEF2FF; color:#374151; }
+.boq-val { font-weight:700; color:#1E3A8A; }
+.boq-sub-row { display:flex; justify-content:space-between; font-size:12.5px; padding:4px 0 4px 15px; border-bottom:1px dashed #EEF2FF; color:#64748B; background:#F8FAFC;}
+.note-source { font-weight:700; color:#1E3A8A; font-size:12px; margin-top:8px; background:#EEF2FF; padding:2px 6px; border-radius:4px; }
+.note-item { font-size:13px; color:#374151; padding:4px 10px; border-left:3px solid #6B7A99; margin-top:4px; line-height:1.4; word-wrap:break-word; }
+#saving-indicator { font-size: 11px; color: #16A34A; margin-left: 10px; font-style: italic; opacity: 0; transition: opacity 0.5s; }
+
+/* Fullscreen Mode (เฉพาะจอวาดแบบ) */
+#app-wrapper.expanded-app { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 999999; background: #F0F4FF; }
+#app-wrapper.expanded-app #main-container { height: 100vh !important; flex: 1; }
+#app-wrapper.expanded-app #iso3d-panel, 
+#app-wrapper.expanded-app #subs-header, 
+#app-wrapper.expanded-app #subs-container, 
+#app-wrapper.expanded-app #boq-panel,
+#app-wrapper.expanded-app #resize-handle { display: none !important; }
+
+/* 3D focus mode (ดู 3D) */
+#app-wrapper.mode-3d #main-container .canvas-wrap,
+#app-wrapper.mode-3d #main-container .toolbar,
+#app-wrapper.mode-3d #main-container .zoom-box,
+#app-wrapper.mode-3d #main-container .status,
+#app-wrapper.mode-3d #resize-handle,
+#app-wrapper.mode-3d #subs-header,
+#app-wrapper.mode-3d #subs-container,
+#app-wrapper.mode-3d #boq-panel { display: none !important; }
+#app-wrapper.mode-3d #main-container { height: 100vh !important; position: relative; }
+/* iso3d-panel คลุมตั้งแต่ top:0 เพราะ toolbar ถูกซ่อนแล้ว */
+#app-wrapper.mode-3d #iso3d-panel { display: block !important; position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 9999; border-top: none; }
+#app-wrapper.mode-3d #c3d { width: 100% !important; height: calc(100% - 44px) !important; }
+</style>
+</head>
+<body>
+
+<div id="app-wrapper">
+    <div id="left-column">
+        <div id="main-container"></div>
+        <div id="resize-handle" title="ลากเพื่อปรับความสูงกระดาน"></div>
+        <div id="subs-header" style="display:none;">📐 กระดานวาดหน้าตัดด้านข้าง (Side View) ท่อลงแต่ละจุด</div>
+        <div id="subs-container"></div>
+
+        <!-- ── จอ 3D Isometric (read-only, real-time) ── -->
+        <div id="iso3d-panel">
+            <div id="iso3d-header">
+                🏠 มุมมอง 3D Isometric (real-time)
+                <button onclick="rotL3()">◀</button>
+                <button onclick="rotR3()">▶</button>
+                <button onclick="tiltU3()">▲</button>
+                <button onclick="tiltD3()">▼</button>
+                <button onclick="zIn3()">+</button>
+                <button onclick="zOut3()">-</button>
+                <button onclick="rst3()">Reset</button>
+                <button id="back-to-canvas-btn" onclick="backToCanvas()" style="padding:3px 12px;border-radius:4px;border:1.5px solid rgba(255,255,255,0.4);background:rgba(255,255,255,0.12);color:#fff;font-size:12px;cursor:pointer;margin-left:6px;">✏️ กลับกระดานวาด</button>
+                <span style="margin-left:auto;color:#8BA3CC;font-size:11px;">ลากหมุน · Scroll zoom</span>
+            </div>
+            <canvas id="c3d" width="900" height="520"></canvas>
+        </div>
+    </div>
+    
+    <div id="boq-panel">
+        <h4 style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:4px;">
+            📦 วัสดุ (อัตโนมัติ)
+            <span style="display:flex;gap:6px;align-items:center;">
+                <button id="copy-boq-btn" onclick="copyBOQToClipboard()" style="display:none;padding:3px 9px;border-radius:5px;border:1.5px solid #16A34A;background:rgba(22,163,74,0.15);color:#16A34A;font-size:11px;font-weight:700;cursor:pointer;">📋 Copy JSON</button>
+                <span id="saving-indicator">✓ Saved</span>
+            </span>
+        </h4>
+        <div class="boq-sec">ราง (R) [จากแปลนหลัก]</div>
+        <div class="boq-row"><span>ความยาวรวม</span> <span class="boq-val" id="b-gl">0 ม.</span></div>
+        <div class="boq-row"><span>ท่อน R (5ม./ท่อน)</span> <span class="boq-val" id="b-gp">0 ท่อน</span></div>
+        <div class="boq-row"><span>ข้อต่อ RSK</span> <span class="boq-val" id="b-jo">0 ชิ้น</span></div>
+        <div class="boq-row"><span>ตะขอรางน้ำ <span id="hook-label-spacing">(ทุก 1 ม.)</span></span> <span class="boq-val" id="b-hk">0 ตัว</span></div>
+        <div class="boq-row"><span>ฝาปิดปลาย RGT</span> <span class="boq-val" id="b-ec">0 ชิ้น</span></div>
+        
+        <div class="boq-sec">มุม (อัตโนมัติ)</div>
+        <div class="boq-row"><span>มุมนอก RVY (90°)</span> <span class="boq-val" id="b-ov">0 ชิ้น</span></div>
+        <div class="boq-row"><span>มุมใน RVI (90°)</span> <span class="boq-val" id="b-iv">0 ชิ้น</span></div>
+        <div class="boq-row"><span style="color:#DC2626;">● มุมนอกพิเศษ RVY135</span> <span class="boq-val" id="b-ov135" style="color:#DC2626;">0 ชิ้น</span></div>
+        <div class="boq-row"><span style="color:#16A34A;">● มุมในพิเศษ RVI135</span> <span class="boq-val" id="b-iv135" style="color:#16A34A;">0 ชิ้น</span></div>
+        
+        <div class="boq-sec">ท่อลง (SROR) [จากหน้าตัด]</div>
+        <div class="boq-row"><span>ความยาวรวม</span> <span class="boq-val" id="b-dl">0 ม.</span></div>
+        <div id="boq-dp-breakdown"></div>
+        <div class="boq-row"><span>ท่อน SROR (5ม./ท่อน)</span><span class="boq-val" id="b-dp">0 ท่อน</span></div>
+        <div class="boq-row"><span>ท่อเชื่อมรางน้ำ SOK (1/จุด)</span> <span class="boq-val" id="b-dd">0 ชิ้น</span></div>
+        <div class="boq-row"><span>ท่องอ BK (2/จุด)</span> <span class="boq-val" id="b-bk">0 ชิ้น</span></div>
+        <div class="boq-row"><span style="color:#D97706;">● ข้องอหลบบัว (4/จุด)</span> <span class="boq-val" id="b-elbow" style="color:#D97706;">0 ตัว</span></div>
+        <div class="boq-row"><span>ตะขอท่อลง SSVH</span><span class="boq-val" id="b-br">0 ตัว</span></div>
+        <div class="boq-row"><span>แขนท่อรวม</span> <span class="boq-val" id="b-arm">0.00 ม.</span></div>
+        <div class="boq-row"><span>ท่อน้ำทิ้ง UTK (1/จุด)</span> <span class="boq-val" id="b-utk">0 ชิ้น</span></div>
+
+        <div class="boq-sec">🔵 ท่อ PVC (จากแปลนหลัก)</div>
+        <div class="boq-row"><span>ความยาวรวม PVC</span> <span class="boq-val" id="b-pvc-len">0 ม.</span></div>
+        <div class="boq-row"><span>ท่อน PVC (4ม./ท่อน)</span> <span class="boq-val" id="b-pvc-pcs">0 ท่อน</span></div>
+        <div class="boq-row"><span>ท่อต่อตรง PVC</span> <span class="boq-val" id="b-pvc-join">0 ชิ้น</span></div>
+        <div class="boq-row"><span>ข้องอ 90°</span> <span class="boq-val" id="b-pvc-90">0 ชิ้น</span></div>
+        <div class="boq-row"><span>ข้องอ 45°</span> <span class="boq-val" id="b-pvc-45">0 ชิ้น</span></div>
+        <div class="boq-row"><span>บ่อพัก</span> <span class="boq-val" id="b-pvc-pit">0 บ่อ</span></div>
+
+        <div class="boq-sec">📝 รายการหมายเหตุ</div>
+        <div id="note-list"></div>
+    </div>
+</div>
+
+<script>
+// =======================================================
+// 1. STREAMLIT BI-DIRECTIONAL BRIDGE (สะพานเชื่อม Python)
+// =======================================================
+const Streamlit = {
+    setComponentReady: function() {
+        window.parent.postMessage({isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1}, "*");
+    },
+    setFrameHeight: function(height) {
+        window.parent.postMessage({isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: height}, "*");
+    },
+    setComponentValue: function(value) {
+        // ส่งข้อมูลตรงกลับ Python แบบไม่พึ่ง URL
+        window.parent.postMessage({isStreamlitMessage: true, type: "streamlit:setComponentValue", value: value}, "*");
+    }
+};
+
+let PROJECT_NAME = '';
+let BOQ_ROOF_TYPE = '';
+let PROJECT_ID = '';
+let SERVER_CANVAS_DATA = null;
+let isInitialized = false;
+let IS_READONLY = false;
+
+window.addEventListener("message", function(event) {
+    if (event.data.type === "streamlit:render") {
+        const args = event.data.args;
+        PROJECT_NAME = args.project_name;
+        PROJECT_ID = args.project_id;
+        SERVER_CANVAS_DATA = args.canvas_data;
+        IS_READONLY = args.readonly === true;
+        BOQ_ROOF_TYPE = args.boq_roof_type || '';
+        // sync roof dropdown ถ้ามีค่าจาก BOQ page
+        const _rsel = document.getElementById('roof-type-select');
+        if (_rsel && BOQ_ROOF_TYPE) _rsel.value = BOQ_ROOF_TYPE;
+
+        if (!isInitialized) {
+            init(); // เรียกฟังก์ชันสร้าง Canvas หลัก
+            isInitialized = true;
+            // ซ่อน toolbar และ boq-panel ถ้า readonly
+            if (IS_READONLY) {
+                document.querySelectorAll('.toolbar, .save-btn, #boq-panel').forEach(el => {
+                    if (el) el.style.display = 'none';
+                });
+                document.getElementById('resize-handle') && (document.getElementById('resize-handle').style.display = 'none');
+                Streamlit.setFrameHeight(1400);
+            } else {
+                Streamlit.setFrameHeight(850);
+            }
+        }
+    }
+});
+
+window.onload = function() {
+    Streamlit.setComponentReady();
+};
+
+// =======================================================
+// 2. CORE LOGIC (ฟังก์ชันคำนวณและวาดแบบเดิมทั้งหมด)
+// =======================================================
+const BASE_PX = 60; 
+
+function distToSeg(px, py, x1, y1, x2, y2) {
+    const dx=x2-x1, dy=y2-y1, d2=dx*dx+dy*dy||1;
+    const t = Math.max(0, Math.min(1, ((px-x1)*dx+(py-y1)*dy)/d2));
+    return Math.hypot(px-x1-t*dx, py-y1-t*dy);
+}
+function ptNear(ax, ay, bx, by) { return Math.hypot(ax-bx, ay-by) < 0.25; }
+
+function pointInPolygon(point, vs) {
+    let x = point.x, y = point.y;
+    let inside = false;
+    for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
+        let xi = vs[i].x, yi = vs[i].y;
+        let xj = vs[j].x, yj = vs[j].y;
+        let intersect = ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+        if (intersect) inside = !inside;
+    }
+    return inside;
+}
+
+function analyzeCorners(gutters, housePoly, houseClosed, app) {
+    if (gutters.length === 0) return { endCaps:0, outerCorners:0, innerCorners:0, outerCorners135:0, innerCorners135:0, list:[] };
+    const NK = (x,y) => `${x.toFixed(2)},${y.toFixed(2)}`;
+    const nodeMap = {};
+    gutters.forEach((ln, i) => {
+        [{ x:ln.x1,y:ln.y1 }, { x:ln.x2,y:ln.y2 }].forEach(p => {
+            const k = NK(p.x, p.y);
+            if (!nodeMap[k]) nodeMap[k] = { x:p.x, y:p.y, segs:[] };
+            nodeMap[k].segs.push(i);
+        });
+    });
+
+    const segUsed = new Array(gutters.length).fill(false);
+    const chains = [];
+    const getOtherEnd = (segIdx, fromKey) => {
+        const ln = gutters[segIdx];
+        const k1 = NK(ln.x1,ln.y1), k2 = NK(ln.x2,ln.y2);
+        return fromKey === k1 ? k2 : k1;
+    };
+    const walkFrom = (startKey) => {
+        const pts = [];
+        let curKey = startKey, prevSeg = -1;
+        while (true) {
+            const node = nodeMap[curKey];
+            pts.push({ x:node.x, y:node.y, key:curKey });
+            const nextSeg = node.segs.find(s => s !== prevSeg && !segUsed[s]);
+            if (nextSeg === undefined) break;
+            segUsed[nextSeg] = true;
+            const nextKey = getOtherEnd(nextSeg, curKey);
+            if (nextKey === startKey) {
+                pts.push({ x:nodeMap[startKey].x, y:nodeMap[startKey].y, key:startKey, isLoopClose:true });
+                break;
+            }
+            prevSeg = nextSeg;
+            curKey = nextKey;
+        }
+        return pts;
+    };
+    const sortedKeys = Object.keys(nodeMap).sort((a,b) => nodeMap[a].segs.length - nodeMap[b].segs.length);
+    sortedKeys.forEach(k => {
+        if (nodeMap[k].segs.some(s => !segUsed[s])) {
+            const chain = walkFrom(k);
+            if (chain.length >= 2) chains.push(chain);
+        }
+    });
+
+    let totalEndCaps = 0;
+    const allRawCorners = [];
+
+    chains.forEach(chain => {
+        const n = chain.length;
+        const isLoop = chain[n-1].isLoopClose;
+        if (!isLoop) {
+            if ((nodeMap[chain[0].key]?.segs.length ?? 0) === 1) totalEndCaps++;
+            if ((nodeMap[chain[n-1].key]?.segs.length ?? 0) === 1) totalEndCaps++;
+        }
+        const interiorRange = isLoop ? { start:0, end:n-2 } : { start:1, end:n-2 };
+        if (interiorRange.start > interiorRange.end) return;
+
+        const turns = [];
+        for (let i = interiorRange.start; i <= interiorRange.end; i++) {
+            const prev = isLoop ? ((i-1+n-1)%(n-1)) : i-1;
+            const next = isLoop ? ((i+1)%(n-1)) : i+1;
+            const inX = chain[i].x - chain[prev].x;
+            const inY = chain[i].y - chain[prev].y;
+            const outX = chain[next].x - chain[i].x;
+            const outY = chain[next].y - chain[i].y;
+
+            const cross = inX*outY - inY*outX;
+            const dot   = inX*outX + inY*outY;
+            const mag   = Math.hypot(inX,inY) * Math.hypot(outX,outY);
+
+            const angleDeg = mag > 0 ? Math.acos(Math.max(-1, Math.min(1, dot/mag))) * 180/Math.PI : 0;
+            const turnSign = cross > 0 ? 1 : cross < 0 ? -1 : 0;
+            const exteriorAngle = 180 - angleDeg;
+            const is135 = exteriorAngle >= 115 && exteriorAngle < 158;
+            const is90 = exteriorAngle >= 68 && exteriorAngle < 115;
+
+            if (turnSign !== 0 && (is135 || is90)) {
+                turns.push({ idx:i, turnSign, is135 });
+            }
+        }
+        const windingSum = turns.reduce((s,t) => s + t.turnSign, 0);
+        const outerTurnSign = windingSum <= 0 ? -1 : 1;
+
+        turns.forEach(t => {
+            const pt = chain[t.idx];
+            allRawCorners.push({
+                x: pt.x, y: pt.y, key: pt.key,
+                turnSign: t.turnSign,
+                outerTurnSign,
+                isOuter: t.turnSign === outerTurnSign,
+                is135: t.is135
+            });
+        });
+    });
+
+    const tentative = allRawCorners.map(c => {
+        if (app && app.cornerOverrides[c.key]) return { ...c, type: app.cornerOverrides[c.key] };
+        if (c.is135) return { ...c, type: c.isOuter ? 'RVY135' : 'RVI135' };
+        return { ...c, type: c.isOuter ? 'RVY' : 'RVI' };
+    });
+
+    let rawOuter90 = 0, rawInner90 = 0, rawOuter135 = 0, rawInner135 = 0;
+    tentative.forEach(c => {
+        if (c.type==='RVY') rawOuter90++;
+        else if (c.type==='RVI') rawInner90++;
+        else if (c.type==='RVY135') rawOuter135++;
+        else if (c.type==='RVI135') rawInner135++;
+    });
+
+    let outerCorners=0, innerCorners=0, outerCorners135=0, innerCorners135=0;
+    const cornerList = [];
+    let innerUsed90=0, innerUsed135=0;
+    const maxInner90 = Math.max(0, rawOuter90 - 1);
+    const maxInner135 = Math.max(0, rawOuter135 - 1);
+
+    tentative.forEach(c => {
+        let finalType = c.type;
+        if (finalType === 'RVI') {
+            if (innerUsed90 >= maxInner90) finalType = 'RVY';
+            else innerUsed90++;
+        } else if (finalType === 'RVI135') {
+            if (innerUsed135 >= maxInner135) finalType = 'RVY135';
+            else innerUsed135++;
+        }
+        if (finalType==='RVY') outerCorners++;
+        else if (finalType==='RVI') innerCorners++;
+        else if (finalType==='RVY135') outerCorners135++;
+        else if (finalType==='RVI135') innerCorners135++;
+        cornerList.push({ x:c.x, y:c.y, type:finalType, key:c.key });
+    });
+
+    return { endCaps:totalEndCaps, outerCorners, innerCorners, outerCorners135, innerCorners135, list:cornerList };
+}
+
+class CanvasApp {
+    constructor(domId, type, titleText) {
+        this.domId = domId;
+        this.type = type; 
+        this.title = titleText;
+        
+        this.lines = []; 
+        this.housePolys = [{ points: [], closed: false, floors: 1, roofType: 'ทรงจั่ว', roofDrawn: false }];
+        this.activeHouseIdx = 0;
+        
+        this.history = [];
+        this.redoStack = [];
+        this.zoom = 1.0;
+        this.snapMode = 1.0;
+        this.hookSpacing = 1.0;
+        this.tool = type === 'main' ? 'house' : 'downpipe';
+        this.startPt = null;
+        this.mouseM = {x:0, y:0};
+        
+        this.cornerOverrides = {}; 
+        this.corners = [];         
+
+        this.parent = document.getElementById(domId);
+        this.buildDOM();
+        this.bindEvents();
+        this.resize();
+    }
+
+    buildDOM() {
+        let tools = '';
+        if (this.type === 'main') {
+            tools = `
+                <button class="tool-btn active" data-tool="house" style="background: white; color: #0D2144;" title="วาดทรงบ้าน [H]">⚪ วาดทรงบ้าน</button>
+                <button class="tool-btn" data-action="newHouse" style="color:#22D3EE;" title="เริ่มวาดบ้านหลังใหม่">🏠+ บ้านใหม่</button>
+                <select id="floors-select" title="จำนวนชั้นของบ้านหลังที่กำลังวาด" style="padding:3px 6px;border-radius:5px;border:1.5px solid rgba(255,255,255,0.3);background:#0A1628;color:white;font-size:12px;cursor:pointer;">
+                  <option value="1">1 ชั้น</option><option value="2">2 ชั้น</option><option value="3">3 ชั้น</option>
+                  <option value="4">4 ชั้น</option><option value="5">5 ชั้น</option><option value="6">6 ชั้น</option>
+                  <option value="7">7 ชั้น</option><option value="8">8 ชั้น</option><option value="9">9 ชั้น</option><option value="10">10 ชั้น</option>
+                </select>
+                <div class="sep"></div>
+                <select id="roof-type-select" title="ประเภทหลังคา (sync จากหน้า BOQ)" style="padding:3px 6px;border-radius:5px;border:1.5px solid rgba(255,255,255,0.3);background:#0A1628;color:#FCD34D;font-size:12px;cursor:pointer;">
+                  <option value="">— เลือกประเภทหลังคา —</option>
+                  <option value="ทรงจั่ว">🏠 ทรงจั่ว</option>
+                  <option value="ทรงปั้นหยา">🏯 ทรงปั้นหยา</option>
+                  <option value="ทรงเพิงหมาแหงน">🏗️ เพิงหมาแหงน</option>
+                  <option value="ทรงปั้นหยาตัวแอล">📐 ปั้นหยาตัวแอล</option>
+                  <option value="ทรงแบน">⬜ ทรงแบน</option>
+                </select>
+                <button class="tool-btn" data-tool="roof" style="color:#9CA3AF;" title="วาดทรงหลังคา [R]">🩶 วาดทรงหลังคา</button>
+                <div class="sep"></div>
+                <button class="tool-btn" data-tool="gutter" title="วาดรางน้ำ [G]">🔵 วาดราง</button>
+                <button class="tool-btn" data-tool="hook" style="color:#4ADE80;" title="วางตะขอรางน้ำ [K]">🟩 ตะขอรางน้ำ</button>
+                <button class="tool-btn" data-tool="downpipe" title="มาร์คจุดท่อลง [D]">🔴 มาร์คท่อลง</button>
+                <button class="tool-btn" data-tool="pvc" style="color:#67E8F9;" title="วาดท่อ PVC [P]">🔵 PVC</button>
+                <button class="tool-btn" data-tool="pit" style="color:#A78BFA;" title="วางบ่อพัก [B]">⬜ บ่อพัก</button>
+                <button class="tool-btn" data-tool="note" title="เพิ่มหมายเหตุ [N]">📝 หมายเหตุ</button>
+                <button class="tool-btn" data-tool="move" title="ย้ายทุกอย่าง [M] หรือกด Space+ลาก">✋ ย้าย</button>
+            `;
+        } else {
+            tools = `
+                <button class="tool-btn active" data-tool="downpipe">🔴 วาดท่อลง</button>
+                <button class="tool-btn" data-tool="elbow">🔶 วาดหลบบัว</button>
+                <button class="tool-btn" data-tool="arm">🟢 วาดแขน</button>
+                <button class="tool-btn" data-tool="note">📝 หมายเหตุ</button>
+                <button class="tool-btn" data-tool="move">✋ ย้าย</button>
+            `;
+        }
+
+        const headHtml = this.type === 'sub' ? `<div class="sub-header">${this.title}</div>` : '';
+        const isSubCanvas = this.type === 'sub';
+        const snapBtns = isSubCanvas ? `
+                <button class="snap-btn active" data-snap="0.2">20 ซม.</button>
+                <button class="snap-btn" data-snap="0.5">50 ซม.</button>
+                <button class="snap-btn" data-snap="1">1 ม.</button>
+        ` : `
+                <button class="snap-btn active" data-snap="1">1 ม.</button>
+                <button class="snap-btn" data-snap="0.5">50 ซม.</button>
+                <button class="snap-btn" data-snap="0.25">25 ซม.</button>
+        `;
+        
+        let hookSpacingInputHtml = '';
+        if (this.type === 'main') {
+            hookSpacingInputHtml = `
+                <div class="sep"></div>
+                <span style="color:white;font-size:12px;">ระยะตะขอ:</span>
+                <input type="number" id="hook-spacing-input" value="100" min="10" max="500" step="5" style="width:50px;padding:3px;border-radius:4px;border:1px solid #ccc;background:#0A1628;color:white;font-size:12px;text-align:center;" title="ระยะห่างตะขอรางน้ำ (เซนติเมตร)" />
+                <span style="color:#8BA3CC;font-size:11px;">ซม.</span>
+            `;
+        }
+        
+        this.parent.innerHTML = `
+            ${headHtml}
+            <div class="toolbar">
+                ${tools}
+                <div class="sep"></div>
+                <button class="tool-btn" data-action="erase" title="ลบเส้น [E]">🗑️ ลบ</button>
+                ${this.type === 'main' ? '<button class="tool-btn" id="view-3d-toggle-btn" title="แสดงมุมมอง 3D Isometric">🏠 ดู 3D</button>' : ''}
+                <button class="save-btn" data-action="save" style="margin-left: 5px;">💾 บันทึกแบบวาด</button>
+                <div class="sep"></div>
+                <button class="tool-btn" data-action="undo" title="ย้อนกลับ [Ctrl+Z]">↩️ Undo</button>
+                <button class="tool-btn" data-action="redo" title="ทำซ้ำ [Ctrl+Shift+Z]">↪️ Redo</button>
+                <button class="tool-btn" data-action="clear" title="ล้างทั้งหมด">🔄 ล้าง</button>
+                ${this.type === 'main' ? '<button class="tool-btn" id="expand-btn" title="ขยายเต็มหน้าจอ">🖥️ เฉพาะจอวาดแบบ</button>' : ''}
+                ${hookSpacingInputHtml}
+                <div class="snap-box">
+                    <span style="color:#8BA3CC;font-size:12px;">Snap:</span>
+                    ${snapBtns}
+                </div>
+            </div>
+            <div class="canvas-wrap">
+                <canvas></canvas>
+                <div class="snap-indicator">⚡ Snap</div>
+            </div>
+            <div class="zoom-box">
+                <button data-action="zoomOut" title="ย่อ [Ctrl+−]">−</button>
+                <span class="zoom-label">100%</span>
+                <button data-action="zoomIn" title="ขยาย [Ctrl+=]">+</button>
+                <button data-action="zoomReset" title="100%">Rst</button>
+                <button data-action="zoomFit" title="Zoom ให้พอดีกับสิ่งที่วาด" style="font-size:11px;padding:0 5px;">⊡ Fit</button>
+                <button data-action="goHome" title="กลับจุดกึ่งกลาง" style="font-size:11px;padding:0 5px;">⌂</button>
+            </div>
+            <div class="status">
+                <span class="s-pos">ตำแหน่ง: —</span>
+                <span class="s-info">คลิกจุดเริ่ม → คลิกจุดปลาย</span>
+                <span class="s-len"></span>
+                <span style="margin-left:auto;color:#9CA3AF;font-size:11px;">⌨️ Ctrl+Z/Y=Undo/Redo &nbsp;|&nbsp; Esc=ยกเลิก &nbsp;|&nbsp; Ctrl+Scroll=Zoom &nbsp;|&nbsp; Space+ลาก=เลื่อน &nbsp;|&nbsp; H/G/D/R/P/B/N/M/E=tools</span>
+            </div>
+            ${isSubCanvas ? '<div class="sub-elbow-summary" id="elbow-sum-' + this.domId + '"><span>ข้องอหลบบัว:</span> <b id="elbow-cnt-' + this.domId + '">0</b> ตัว &nbsp;|&nbsp; <span>ความยาวแขนรวม:</span> <b id="arm-len-' + this.domId + '">0.00</b> ม.</div>' : ''}
+        `;
+
+        this.canvas = this.parent.querySelector('canvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.wrap = this.parent.querySelector('.canvas-wrap');
+        this.snapInd = this.parent.querySelector('.snap-indicator');
+        
+        if (isSubCanvas) this.snapMode = 0.2;
+        
+        this.parent.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => this.setTool(b.dataset.tool));
+        this.parent.querySelector('[data-action="erase"]').onclick = () => this.setTool('erase');
+        this.parent.querySelector('[data-action="undo"]').onclick = () => this.undo();
+        this.parent.querySelector('[data-action="redo"]').onclick = () => this.redo();
+        this.parent.querySelector('[data-action="clear"]').onclick = () => this.clearAll();
+        const newHouseBtn = this.parent.querySelector('[data-action="newHouse"]');
+        if (newHouseBtn) newHouseBtn.onclick = () => this.addNewHouse();
+        const floorsEl = this.parent.querySelector('#floors-select');
+        if (floorsEl) {
+            floorsEl.onchange = () => {
+                const ahp = this.housePolys[this.activeHouseIdx];
+                if (ahp) { ahp.floors = parseInt(floorsEl.value); onDataChanged(); saveData(); render3D(); }
+            };
+        }
+        const roofTypeEl = this.parent.querySelector('#roof-type-select');
+        if (roofTypeEl) {
+            roofTypeEl.onchange = () => {
+                const ahp = this.housePolys[this.activeHouseIdx];
+                if (ahp) { ahp.roofType = roofTypeEl.value; onDataChanged(); saveData(); render3D(); }
+            };
+        }
+        const saveBtn = this.parent.querySelector('[data-action="save"]');
+        if (saveBtn) saveBtn.onclick = () => saveData(true);
+        this.parent.querySelectorAll('[data-snap]').forEach(b => b.onclick = () => this.setSnap(parseFloat(b.dataset.snap), b));
+        
+        this.parent.querySelector('[data-action="zoomIn"]').onclick = () => { this.zoom = Math.min(this.zoom+0.25, 5); this.updateZoom(); };
+        this.parent.querySelector('[data-action="zoomOut"]').onclick = () => { this.zoom = Math.max(this.zoom-0.25, 0.25); this.updateZoom(); };
+        this.parent.querySelector('[data-action="zoomReset"]').onclick = () => { this.zoom = 1; this.updateZoom(); };
+        this.parent.querySelector('[data-action="zoomFit"]').onclick = () => this.zoomToFit();
+        this.parent.querySelector('[data-action="goHome"]').onclick = () => { this.centerViewport(); };
+
+        const hookInput = this.parent.querySelector('#hook-spacing-input');
+        if (hookInput) {
+            const updateHookSpacing = () => {
+                let cm = parseFloat(hookInput.value) || 100;
+                if (cm < 10) cm = 10;
+                if (cm > 500) cm = 500;
+                this.hookSpacing = cm / 100.0;
+                onDataChanged();
+                saveData();
+                this.render();
+            };
+            hookInput.onchange = updateHookSpacing;
+            hookInput.oninput = updateHookSpacing;
+        }
+
+        const expandBtn = this.parent.querySelector('#expand-btn');
+        if (expandBtn) {
+            expandBtn.onclick = () => {
+                const wrapper = document.getElementById('app-wrapper');
+                if (wrapper.classList.contains('expanded-app')) {
+                    wrapper.classList.remove('expanded-app');
+                    expandBtn.textContent = '🖥️ เฉพาะจอวาดแบบ';
+                } else {
+                    wrapper.classList.add('expanded-app');
+                    expandBtn.textContent = '🏠 จอปรกติ';
+                }
+                this.resize();
+                setTimeout(() => { this.centerViewport(); }, 50);
+            };
+        }
+
+        const view3dBtn = document.getElementById('view-3d-toggle-btn');
+        if (view3dBtn) {
+            view3dBtn.onclick = () => {
+                const wrapper = document.getElementById('app-wrapper');
+                // เปิดหน้า 3D เต็มจอด้วย CSS อย่างเดียว (mode-3d ทำ iso3d-panel เป็น position:absolute เต็มจอ)
+                // *ไม่ย้าย DOM* — การ appendChild ย้าย panel ทำให้ layout กระดานวาดพังตอนกลับ
+                wrapper.classList.add('mode-3d');
+                setTimeout(() => {
+                    if (typeof resize3D === 'function') resize3D();
+                }, 80);
+                setTimeout(() => {
+                    if (typeof render3D === 'function') render3D();
+                }, 160);
+            };
+        }
+
+        // back-to-canvas-btn ใช้ onclick="backToCanvas()" (เป็น global function ด้านล่าง)
+    }
+
+    updateZoom() {
+        this.parent.querySelector('.zoom-label').textContent = Math.round(this.zoom * 100) + '%';
+        this.resize();
+    }
+
+    centerViewport() {
+        const wrapW = this.wrap.clientWidth || 800;
+        const wrapH = this.wrap.clientHeight || 600;
+        this.wrap.scrollLeft = (this.canvas.width - wrapW) / 2;
+        this.wrap.scrollTop = (this.canvas.height - wrapH) / 2;
+    }
+
+    zoomToFit() {
+        const allPts = [];
+        this.lines.forEach(ln => {
+            if (ln.type === 'elbow' && ln.pts) ln.pts.forEach(p => allPts.push(p));
+            else if (ln.type === 'hook') allPts.push({x: ln.x, y: ln.y});
+            else if (ln.type === 'pit') allPts.push({x: ln.x, y: ln.y});
+            else if (ln.x1 !== undefined) { allPts.push({x:ln.x1,y:ln.y1}); allPts.push({x:ln.x2,y:ln.y2}); }
+        });
+        (this.housePolys||[]).forEach(hp => hp.points.forEach(p => allPts.push(p)));
+        if (allPts.length === 0) { this.wrap.scrollLeft = 0; this.wrap.scrollTop = 0; return; }
+
+        const minX = Math.min(...allPts.map(p=>p.x));
+        const minY = Math.min(...allPts.map(p=>p.y));
+        const maxX = Math.max(...allPts.map(p=>p.x));
+        const maxY = Math.max(...allPts.map(p=>p.y));
+        const padM = 5;
+        const wM = (maxX - minX) + padM*2;
+        const hM = (maxY - minY) + padM*2;
+        const wrapW = this.wrap.clientWidth;
+        const wrapH = this.wrap.clientHeight;
+        const newZoom = Math.min(wrapW / (wM * BASE_PX), wrapH / (hM * BASE_PX), 5);
+        this.zoom = Math.max(newZoom, 0.1);
+        this.updateZoom();
+        setTimeout(() => {
+            const C = BASE_PX * this.zoom;
+            this.wrap.scrollLeft = Math.max(0, (minX - padM) * C);
+            this.wrap.scrollTop  = Math.max(0, (minY - padM) * C);
+        }, 50);
+    }
+
+    setTool(t) {
+        this.tool = t;
+        this.parent.querySelectorAll('.tool-btn').forEach(b => {
+            b.classList.remove('active');
+            if(b.dataset.tool === 'house') { b.style.background = 'rgba(255,255,255,0.12)'; b.style.color = 'white'; }
+        });
+        const btn = this.parent.querySelector(`[data-tool="${t}"],[data-action="${t}"]`);
+        if(btn) {
+            btn.classList.add('active');
+            if(t === 'house') { btn.style.background = 'white'; btn.style.color = '#0D2144'; }
+        }
+        this.startPt = null;
+        if (t === 'move') {
+            this.wrap.classList.add('move-mode');
+        } else {
+            this.wrap.classList.remove('move-mode');
+            this.wrap.classList.remove('moving');
+        }
+        this.parent.querySelector('.s-info').textContent = 
+            t==='note' ? 'คลิกจุดชี้เป้า' : 
+            t==='move' ? 'คลิกค้างแล้วลากเพื่อย้ายทุกอย่าง' : 
+            t==='elbow' ? 'วาดท่อหลบบัว — จุดเริ่ม → จุดปลาย (นับ 4 ข้องอต่อ 1 ส่วน)' :
+            t==='arm' ? 'วาดแขน — จุดเริ่ม → จุดปลาย (วัดความยาว x2)' :
+            t==='pvc' ? 'วาดท่อ PVC — คลิกจุดเริ่ม → จุดปลาย (เส้นฟ้า, คำนวณมุมอัตโนมัติ)' : t==='pit' ? 'คลิกตำแหน่งที่ต้องการวางบ่อพัก 50×50 ซม.' : t==='roof' ? 'วาดทรงหลังคา — เลือกประเภทด้านบน แล้ววาดสันหลังคา (เส้นสีเทา)' :
+            t==='hook' ? 'คลิกบนเส้นราง เพื่อเพิ่มตะขอรางน้ำพิเศษ (นอกเหนือสูตรอัตโนมัติ)' :
+            'คลิกจุดเริ่ม → คลิกจุดปลาย';
+        if (t === 'roof') {
+            const ahpR = this.housePolys[this.activeHouseIdx];
+            if (ahpR) {
+                if (BOQ_ROOF_TYPE && !ahpR.roofType) ahpR.roofType = BOQ_ROOF_TYPE;
+                const rsel = this.parent.querySelector('#roof-type-select');
+                if (rsel) { if (BOQ_ROOF_TYPE) rsel.value = BOQ_ROOF_TYPE; ahpR.roofType = rsel.value; }
+            }
+        }
+        this.render();
+    }
+
+    setSnap(s, btnEl) {
+        this.snapMode = s;
+        this.parent.querySelectorAll('.snap-btn').forEach(b => b.classList.remove('active'));
+        btnEl.classList.add('active');
+        const snapLabel = s===1 ? '⚡ Snap 1 ม.' : s===0.5 ? '📐 Snap 50 ซม.' : s===0.25 ? '📏 Snap 25 ซม.' : '📏 Snap 20 ซม.';
+        this.snapInd.textContent = snapLabel;
+        this.snapInd.classList.add('show');
+        setTimeout(() => this.snapInd.classList.remove('show'), 1500);
+        this.render();
+    }
+
+    saveHistory() {
+        this.history.push({
+            lines: JSON.parse(JSON.stringify(this.lines)),
+            housePolys: JSON.parse(JSON.stringify(this.housePolys || [{ points: [], closed: false }])),
+            activeHouseIdx: this.activeHouseIdx
+        });
+        this.redoStack = [];
+    }
+
+    undo() { 
+        if(this.history.length) {
+            this.redoStack.push({
+                lines: JSON.parse(JSON.stringify(this.lines)),
+                housePolys: JSON.parse(JSON.stringify(this.housePolys || [])),
+                activeHouseIdx: this.activeHouseIdx
+            });
+            const st = this.history.pop(); 
+            this.lines = st.lines;
+            this.housePolys = st.housePolys || [{ points: [], closed: false }];
+            this.activeHouseIdx = st.activeHouseIdx || 0;
+            this.startPt = null; 
+            this.render(); 
+            onDataChanged(); 
+            saveData();
+        } 
+    }
+
+    redo() {
+        if(this.redoStack.length) {
+            this.history.push({
+                lines: JSON.parse(JSON.stringify(this.lines)),
+                housePolys: JSON.parse(JSON.stringify(this.housePolys || [])),
+                activeHouseIdx: this.activeHouseIdx
+            });
+            const st = this.redoStack.pop();
+            this.lines = st.lines;
+            this.housePolys = st.housePolys || [{ points: [], closed: false }];
+            this.activeHouseIdx = st.activeHouseIdx || 0;
+            this.startPt = null;
+            this.render();
+            onDataChanged();
+            saveData();
+        }
+    }
+    
+    clearAll() { 
+        if(confirm('ล้างแบบกระดานนี้?')){ 
+            this.saveHistory();
+            this.lines = []; 
+            if (this.type === 'main') {
+                this.housePolys = [{ points: [], closed: false, floors: 1, roofType: 'ทรงจั่ว', roofDrawn: false }];
+                this.activeHouseIdx = 0;
+            }
+            this.startPt = null; 
+            this.render(); 
+            onDataChanged(); 
+            saveData();
+        } 
+    }
+
+    resize() {
+        const COLS = 100, ROWS = 100;
+        this.canvas.width  = Math.max(COLS * BASE_PX * this.zoom, this.wrap.clientWidth  || 800);
+        this.canvas.height = Math.max(ROWS * BASE_PX * this.zoom, this.wrap.clientHeight || 600);
+        this.render();
+    }
+
+    ensureCanvasCovers(worldX, worldY) {
+        const C = BASE_PX * this.zoom;
+        const needW = (worldX + 20) * C;
+        const needH = (worldY + 20) * C;
+        if (needW > this.canvas.width || needH > this.canvas.height) {
+            this.canvas.width  = Math.max(this.canvas.width,  needW);
+            this.canvas.height = Math.max(this.canvas.height, needH);
+            this.render();
+        }
+    }
+
+    bindEvents() {
+        let isDragging = false;
+        let dragIdx = null;
+        let mouseDownPt = {x:0, y:0};
+        let isMoving = false;
+        let moveStartWorld = {x:0, y:0};
+        let moveSnapshot = null;
+        let isPanning = false;
+        let panStartX = 0, panStartY = 0;
+        let panScrollLeft = 0, panScrollTop = 0;
+        let spaceDown = false;
+
+        document.body.setAttribute('tabindex', '0');
+        document.body.style.outline = 'none';
+
+        this.wrap.addEventListener('mouseenter', () => document.body.focus());
+        this.wrap.addEventListener('mousedown', () => document.body.focus());
+
+        const onKey = e => {
+            if (e.target.matches('input,textarea,select')) return;
+            if (e.code === 'Space') {
+                e.preventDefault();
+                spaceDown = true;
+                this.wrap.style.cursor = 'grab';
+                return;
+            }
+            if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); this.undo(); return; }
+            if ((e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'z') || (e.ctrlKey && e.key.toLowerCase() === 'y')) { e.preventDefault(); this.redo(); return; }
+            if (e.ctrlKey && (e.key === '=' || e.key === '+')) { e.preventDefault(); this.zoom = Math.min(this.zoom+0.25,5); this.updateZoom(); return; }
+            if (e.ctrlKey && e.key === '-') { e.preventDefault(); this.zoom = Math.max(this.zoom-0.25,0.25); this.updateZoom(); return; }
+            if (e.ctrlKey && e.key === '0') { e.preventDefault(); this.zoom=1; this.updateZoom(); return; }
+            if (e.ctrlKey && e.key.toLowerCase() === 'f') { e.preventDefault(); this.zoomToFit(); return; }
+            if (e.key === 'Escape') {
+                if (this.startPt) {
+                    this.startPt = null;
+                    this.render();
+                    this.parent.querySelector('.s-info').textContent = 'ยกเลิกแล้ว — คลิกจุดเริ่มใหม่';
+                }
+                return;
+            }
+            if ((e.key === 'Delete' || e.key === 'Backspace') && this.tool === 'house') {
+                const ahp = this.housePolys[this.activeHouseIdx];
+                if (ahp && !ahp.closed && ahp.points.length > 0) {
+                    e.preventDefault();
+                    this.saveHistory();
+                    ahp.points.pop();
+                    this.startPt = null;
+                    this.render();
+                }
+                return;
+            }
+            if (!e.ctrlKey && !e.altKey && !e.shiftKey) {
+                const toolMap = { 'h':'house', 'g':'gutter', 'd':'downpipe', 'r':'roof',
+                                  'p':'pvc', 'b':'pit', 'n':'note', 'm':'move',
+                                  'e':'erase', 'k':'hook' };
+                const key = e.key.toLowerCase();
+                if (toolMap[key]) {
+                    e.preventDefault();
+                    this.setTool(toolMap[key]);
+                }
+            }
+        };
+
+        const onKeyUp = e => {
+            if (e.code === 'Space') {
+                spaceDown = false;
+                if (!isPanning) {
+                    this.wrap.style.cursor = this.tool === 'move' ? 'grab' : 'crosshair';
+                }
+            }
+        };
+
+        document.addEventListener('keydown', onKey);
+        document.addEventListener('keyup', onKeyUp);
+
+        setTimeout(() => document.body.focus(), 200);
+
+        this.wrap.addEventListener('mousedown', e => {
+            if (e.button === 1 || (e.button === 0 && spaceDown)) {
+                e.preventDefault();
+                isPanning = true;
+                panStartX = e.clientX;
+                panStartY = e.clientY;
+                panScrollLeft = this.wrap.scrollLeft;
+                panScrollTop = this.wrap.scrollTop;
+                this.wrap.style.cursor = 'grabbing';
+                return;
+            }
+        });
+
+        document.addEventListener('mousemove', e => {
+            if (!isPanning) return;
+            const dx = e.clientX - panStartX;
+            const dy = e.clientY - panStartY;
+            this.wrap.scrollLeft = panScrollLeft - dx;
+            this.wrap.scrollTop = panScrollTop - dy;
+        });
+
+        document.addEventListener('mouseup', e => {
+            if (isPanning) {
+                isPanning = false;
+                this.wrap.style.cursor = spaceDown ? 'grab' : (this.tool === 'move' ? 'grab' : 'crosshair');
+            }
+        });
+
+        this.wrap.addEventListener('mousemove', e => {
+            const r = this.canvas.getBoundingClientRect();
+            this.mouseM.x = (e.clientX - r.left) / (BASE_PX * this.zoom);
+            this.mouseM.y = (e.clientY - r.top) / (BASE_PX * this.zoom);
+            
+            const sx = (Math.round(this.mouseM.x / this.snapMode) * this.snapMode).toFixed(this.snapMode===0.5?1:0);
+            const sy = (Math.round(this.mouseM.y / this.snapMode) * this.snapMode).toFixed(this.snapMode===0.5?1:0);
+            this.parent.querySelector('.s-pos').textContent = `ตำแหน่ง: ${sx}ม., ${sy}ม.`;
+            
+            if (isMoving && moveSnapshot) {
+                const rawDx = this.mouseM.x - moveStartWorld.x;
+                const rawDy = this.mouseM.y - moveStartWorld.y;
+                const dx = Math.round(rawDx / this.snapMode) * this.snapMode;
+                const dy = Math.round(rawDy / this.snapMode) * this.snapMode;
+
+                this.lines = moveSnapshot.lines.map(ln => {
+                    if (ln.type === 'elbow' && ln.pts) {
+                        return { ...ln, pts: ln.pts.map(p => ({x: p.x+dx, y: p.y+dy})) };
+                    }
+                    if (ln.type === 'hook') {
+                        return { ...ln, x: ln.x + dx, y: ln.y + dy };
+                    }
+                    return { ...ln, x1: ln.x1 + dx, y1: ln.y1 + dy, x2: ln.x2 + dx, y2: ln.y2 + dy };
+                });
+                this.housePolys = moveSnapshot.housePolys.map(hp => ({
+                    points: hp.points.map(p => ({ x: p.x + dx, y: p.y + dy })),
+                    closed: hp.closed
+                }));
+                this.render();
+                return;
+            }
+
+            if (isDragging && dragIdx !== null) {
+                const _ahp = this.housePolys[this.activeHouseIdx];
+                if (_ahp) _ahp.points[dragIdx] = { 
+                     x: Math.round(this.mouseM.x / this.snapMode) * this.snapMode, 
+                     y: Math.round(this.mouseM.y / this.snapMode) * this.snapMode 
+                };
+                this.render();
+            } else {
+                this.render();
+            }
+        });
+
+        this.wrap.addEventListener('mousedown', e => {
+            if (e.button === 1 || (e.button === 0 && spaceDown)) return;
+            mouseDownPt = {x: e.clientX, y: e.clientY};
+            const sx = Math.round(this.mouseM.x / this.snapMode) * this.snapMode;
+            const sy = Math.round(this.mouseM.y / this.snapMode) * this.snapMode;
+
+            if (this.tool === 'move') {
+                isMoving = true;
+                moveStartWorld = { x: this.mouseM.x, y: this.mouseM.y };
+                moveSnapshot = {
+                    lines: JSON.parse(JSON.stringify(this.lines)),
+                    housePolys: JSON.parse(JSON.stringify(this.housePolys || []))
+                };
+                this.saveHistory();
+                this.wrap.classList.add('moving');
+                return;
+            }
+
+            if (this.tool === 'house') {
+                for (let hi = 0; hi < this.housePolys.length; hi++) {
+                    const hp = this.housePolys[hi];
+                    if (!hp.closed) continue;
+                    for(let i=0; i<hp.points.length; i++) {
+                        if (ptNear(hp.points[i].x, hp.points[i].y, sx, sy)) {
+                            this.activeHouseIdx = hi;
+                            dragIdx = i;
+                            isDragging = true;
+                            this.saveHistory();
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+
+        this.wrap.addEventListener('mouseup', e => {
+            if (isPanning) return;
+            if (isMoving) {
+                isMoving = false;
+                moveSnapshot = null;
+                this.wrap.classList.remove('moving');
+                onDataChanged();
+                saveData();
+                return;
+            }
+
+            if (isDragging) {
+                isDragging = false;
+                dragIdx = null;
+                onDataChanged();
+                saveData();
+                return;
+            }
+            if (Math.hypot(e.clientX - mouseDownPt.x, e.clientY - mouseDownPt.y) < 5) {
+                this.handleClick();
+            }
+        });
+
+        this.wrap.addEventListener('wheel', e => {
+            if (!e.ctrlKey) return;
+            e.preventDefault();
+            const rect = this.canvas.getBoundingClientRect();
+            const mouseXWorld = (e.clientX - rect.left) / (BASE_PX * this.zoom);
+            const mouseYWorld = (e.clientY - rect.top)  / (BASE_PX * this.zoom);
+            this.zoom = e.deltaY < 0
+                ? Math.min(this.zoom * 1.1, 5)
+                : Math.max(this.zoom / 1.1, 0.1);
+            this.updateZoom();
+            const C = BASE_PX * this.zoom;
+            this.wrap.scrollLeft = mouseXWorld * C - (e.clientX - this.wrap.getBoundingClientRect().left);
+            this.wrap.scrollTop  = mouseYWorld * C - (e.clientY - this.wrap.getBoundingClientRect().top);
+        }, { passive: false });
+
+        this.wrap.addEventListener('contextmenu', e => e.preventDefault());
+    }
+
+    handleClick() {
+        const sx = Math.round(this.mouseM.x / this.snapMode) * this.snapMode;
+        const sy = Math.round(this.mouseM.y / this.snapMode) * this.snapMode;
+        this.ensureCanvasCovers(sx, sy);
+
+        if (this.type === 'sub' && this._lockBox) {
+            if (this.mouseM.x >= 0 && this.mouseM.x <= this._lockBox.wM &&
+                this.mouseM.y >= 0 && this.mouseM.y <= this._lockBox.hM) {
+                return;
+            }
+        }
+
+        if (!this.startPt && this.type === 'main' && this.corners && this.corners.length > 0) {
+            let clickedCorner = null;
+            this.corners.forEach(c => {
+                if (Math.hypot(c.x - this.mouseM.x, c.y - this.mouseM.y) < 0.4) {
+                    clickedCorner = c;
+                }
+            });
+            if (clickedCorner) {
+                this.cornerOverrides[clickedCorner.key] = clickedCorner.type === 'RVY' ? 'RVI' : 'RVY';
+                onDataChanged();
+                saveData();
+                return; 
+            }
+        }
+
+        if (this.tool === 'erase') {
+            let best = -1, bestD = 0.35; 
+            this.lines.forEach((ln, i) => {
+                if (ln.type === 'elbow' && ln.pts) {
+                    for (let j = 0; j < ln.pts.length - 1; j++) {
+                        const d = distToSeg(this.mouseM.x, this.mouseM.y, ln.pts[j].x, ln.pts[j].y, ln.pts[j+1].x, ln.pts[j+1].y);
+                        if (d < bestD) { bestD = d; best = i; }
+                    }
+                } else if (ln.type === 'hook') {
+                    const d = Math.hypot(this.mouseM.x - ln.x, this.mouseM.y - ln.y);
+                    if (d < bestD) { bestD = d; best = i; }
+                } else if (ln.x1 !== undefined) {
+                    const d = distToSeg(this.mouseM.x, this.mouseM.y, ln.x1, ln.y1, ln.x2, ln.y2);
+                    if (d < bestD) { bestD = d; best = i; }
+                }
+            });
+            if (best !== -1) {
+                this.saveHistory();
+                this.lines.splice(best, 1);
+                this.render();
+                onDataChanged();
+                saveData();
+            }
+            return;
+        }
+
+        if (this.tool === 'house') {
+            if (this.activeHouseIdx >= this.housePolys.length) {
+                this.housePolys.push({ points: [], closed: false });
+            }
+            const ahp = this.housePolys[this.activeHouseIdx];
+            if (ahp.closed) return;
+            if (ahp.points.length > 2 && ptNear(ahp.points[0].x, ahp.points[0].y, sx, sy)) {
+                this.saveHistory();
+                ahp.closed = true;
+                this.render();
+                onDataChanged();
+                saveData();
+            } else {
+                this.saveHistory();
+                ahp.points.push({x: sx, y: sy});
+                this.render();
+                onDataChanged();
+                saveData();
+            }
+            return;
+        }
+
+        if (this.tool === 'elbow') {
+            this.saveHistory();
+            const bw = 1.0, bh = 1.0; 
+            this.lines.push({ type: 'elbow', subtype: 'bypass',
+                pts: [{x: sx, y: sy}, {x: sx + bw, y: sy}, {x: sx + bw, y: sy + bh}, {x: sx, y: sy + bh}]
+            });
+            onDataChanged(); saveData();
+            this.render();
+            return;
+        }
+
+        if (this.tool === 'pit') {
+            this.saveHistory();
+            this.lines.push({ type: 'pit', x: sx, y: sy });
+            onDataChanged(); saveData();
+            this.render();
+            return;
+        }
+        if (this.tool === 'hook') {
+            const gutters = this.lines.filter(l => l.type === 'gutter');
+            let bestSeg = null, bestT = 0, bestDist = 0.5;
+            gutters.forEach(ln => {
+                const dx = ln.x2 - ln.x1, dy = ln.y2 - ln.y1;
+                const d2 = dx*dx + dy*dy || 1;
+                const t = Math.max(0, Math.min(1, ((sx-ln.x1)*dx + (sy-ln.y1)*dy) / d2));
+                const cx2 = ln.x1 + t*dx, cy2 = ln.y1 + t*dy;
+                const dist = Math.hypot(sx-cx2, sy-cy2);
+                if (dist < bestDist) { bestDist = dist; bestSeg = ln; bestT = t; }
+            });
+            if (bestSeg) {
+                this.saveHistory();
+                const dx = bestSeg.x2 - bestSeg.x1, dy = bestSeg.y2 - bestSeg.y1;
+                const hx = bestSeg.x1 + bestT * dx;
+                const hy = bestSeg.y1 + bestT * dy;
+                this.lines.push({ type: 'hook', x: hx, y: hy });
+                this.render();
+                onDataChanged();
+                saveData();
+            }
+            return;
+        }
+
+        if (!this.startPt) {
+            this.startPt = { x: sx, y: sy };
+            this.parent.querySelector('.s-info').textContent = this.tool==='note' ? 'คลิกจุดที่ต้องการวางกล่องข้อความ' : 'คลิกจุดปลาย';
+        } else {
+            if (sx !== this.startPt.x || sy !== this.startPt.y) {
+                if (this.tool === 'note') {
+                    const txt = prompt('พิมพ์หมายเหตุที่ต้องการ:');
+                    if (txt && txt.trim() !== '') {
+                        this.saveHistory();
+                        this.lines.push({ type: 'note', x1: this.startPt.x, y1: this.startPt.y, x2: sx, y2: sy, text: txt.trim() });
+                    }
+                } else {
+                    this.saveHistory();
+                    const pushLine = { type: this.tool, x1: this.startPt.x, y1: this.startPt.y, x2: sx, y2: sy };
+                    if (this.tool === 'roof') pushLine.houseIdx = this.activeHouseIdx;
+                    this.lines.push(pushLine);
+
+                    if (this.tool === 'roof') {
+                        const roofLines = this.lines.filter(l => l.type === 'roof' && (l.houseIdx === this.activeHouseIdx || l.houseIdx === undefined));
+                        const TOL = Math.max(this.snapMode * 2, 1.5);
+                        if (roofLines.length >= 3) {
+                            const pts3 = [];
+                            roofLines.forEach(l => {
+                                pts3.push({x:l.x1,y:l.y1}); pts3.push({x:l.x2,y:l.y2});
+                            });
+                            const deg = pts3.map(() => 0);
+                            for (let i=0;i<pts3.length;i++) {
+                                for (let j=i+1;j<pts3.length;j++) {
+                                    if (Math.hypot(pts3[i].x-pts3[j].x, pts3[i].y-pts3[j].y) <= TOL) {
+                                        deg[i]++; deg[j]++;
+                                    }
+                                }
+                            }
+                            const allConnected = deg.every(d => d >= 2);
+                            if (allConnected) {
+                                const ahpC = this.housePolys[this.activeHouseIdx];
+                                if (ahpC && !ahpC.roofDrawn) {
+                                    ahpC.roofDrawn = true;
+                                    const rselC = this.parent.querySelector('#roof-type-select');
+                                    if (rselC && rselC.value) ahpC.roofType = rselC.value;
+                                    this.parent.querySelector('.s-info').textContent = '✅ หลังคาปิดครบแล้ว! ดู 3D ด้านล่าง';
+                                    if (typeof render3D === 'function') render3D();
+                                }
+                            }
+                        }
+                    }
+                }
+                onDataChanged();
+                saveData();
+            }
+            this.startPt = null;
+            this.parent.querySelector('.s-info').textContent = this.tool==='note' ? 'คลิกจุดชี้เป้า' : 'คลิกจุดเริ่ม → คลิกจุดปลาย';
+            this.parent.querySelector('.s-len').textContent = '';
+            this.render();
+        }
+    }
+
+    render() {
+        const ctx = this.ctx;
+        const C = BASE_PX * this.zoom;
+        ctx.clearRect(0,0, this.canvas.width, this.canvas.height);
+        
+        ctx.strokeStyle = 'rgba(100,149,237,0.15)'; ctx.lineWidth = 1;
+        for(let x=0; x<=this.canvas.width; x+=C/2){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,this.canvas.height); ctx.stroke(); }
+        for(let y=0; y<=this.canvas.height; y+=C/2){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(this.canvas.width,y); ctx.stroke(); }
+
+        ctx.strokeStyle = 'rgba(30,58,138,0.25)'; ctx.lineWidth = 1.5;
+        for(let x=0; x<=this.canvas.width; x+=C){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,this.canvas.height); ctx.stroke(); }
+        for(let y=0; y<=this.canvas.height; y+=C){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(this.canvas.width,y); ctx.stroke(); }
+
+        ctx.fillStyle='#8BA3CC'; ctx.font=`${Math.max(10,12*this.zoom)}px Sarabun`;
+        const maxCols = Math.ceil(this.canvas.width / C);
+        const maxRows = Math.ceil(this.canvas.height / C);
+        ctx.textAlign='center';
+        for(let i=0; i<=maxCols; i+=5) ctx.fillText(i+'ม.', i*C, 14*this.zoom);
+        ctx.textAlign='left';
+        for(let j=0; j<=maxRows; j+=5) ctx.fillText(j+'ม.', 4, j*C + 12*this.zoom);
+
+        if (this.housePolys) {
+            this.housePolys.forEach((hp, hIdx) => {
+                const poly = hp.points;
+                const isClosed = hp.closed;
+                const isActive = (hIdx === this.activeHouseIdx);
+                if (!poly || poly.length === 0) return;
+                ctx.beginPath();
+                ctx.moveTo(poly[0].x * C, poly[0].y * C);
+                for(let i=1; i<poly.length; i++) ctx.lineTo(poly[i].x * C, poly[i].y * C);
+                if (isClosed) { ctx.closePath(); ctx.fillStyle = 'rgba(148, 163, 184, 0.25)'; ctx.fill(); }
+                ctx.lineWidth = 3 * this.zoom;
+                ctx.strokeStyle = isActive ? '#94A3B8' : '#B0BEC5';
+                ctx.stroke();
+                let lenPoly = poly.length;
+                let segments = isClosed ? lenPoly : lenPoly - 1;
+                for(let i=0; i<segments; i++) {
+                    let p1 = poly[i], p2 = poly[(i+1)%lenPoly];
+                    let dx = p2.x - p1.x, dy = p2.y - p1.y;
+                    let d = Math.hypot(dx, dy);
+                    if (d === 0) continue;
+                    let cx = (p1.x+p2.x)/2, cy = (p1.y+p2.y)/2;
+                    let nx = -dy/d, ny = dx/d;
+                    if (isClosed) { let tp={x:cx+nx*0.1,y:cy+ny*0.1}; if(!pointInPolygon(tp,poly)){nx=-nx;ny=-ny;} }
+                    ctx.fillStyle = '#475569';
+                    ctx.font = `bold ${Math.max(10, 12 * this.zoom)}px Sarabun`;
+                    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                    ctx.fillText(d.toFixed(2)+'ม.', (cx+nx*0.8)*C, (cy+ny*0.8)*C);
+                }
+                if (!isClosed && this.tool === 'house' && isActive) {
+                    let lastP = poly[poly.length-1];
+                    let ex = Math.round(this.mouseM.x/this.snapMode)*this.snapMode;
+                    let ey = Math.round(this.mouseM.y/this.snapMode)*this.snapMode;
+                    ctx.beginPath(); ctx.moveTo(lastP.x*C, lastP.y*C); ctx.lineTo(ex*C, ey*C);
+                    ctx.strokeStyle='#CBD5E1'; ctx.setLineDash([6,4]); ctx.stroke(); ctx.setLineDash([]);
+                }
+                if (this.tool === 'house' && isClosed) {
+                    poly.forEach(p => {
+                        ctx.beginPath(); ctx.arc(p.x*C, p.y*C, 6*this.zoom, 0, Math.PI*2);
+                        ctx.fillStyle = isActive ? '#FCD34D' : '#D1D5DB'; ctx.fill();
+                        ctx.strokeStyle='#0D2144'; ctx.lineWidth=1.5; ctx.stroke();
+                    });
+                }
+                if (this.housePolys.length > 1 && poly.length > 0) {
+                    ctx.fillStyle = isActive ? '#1E3A8A' : '#6B7A99';
+                    ctx.font = `bold ${Math.max(10,11*this.zoom)}px Sarabun`;
+                    ctx.textAlign='center'; ctx.textBaseline='middle';
+                    ctx.fillText(`บ้าน ${hIdx+1}`, poly[0].x*C, poly[0].y*C - 18*this.zoom);
+                }
+            });
+        }
+
+        this.lines.filter(l => l.type === 'pit').forEach(pit => {
+            const C = BASE_PX * this.zoom;
+            const pw = 0.5 * C, ph = 0.5 * C;
+            const px = pit.x * C - pw/2, py = pit.y * C - ph/2;
+            ctx.beginPath();
+            ctx.rect(px, py, pw, ph);
+            ctx.fillStyle = 'rgba(167,139,250,0.25)';
+            ctx.fill();
+            ctx.strokeStyle = '#7C3AED';
+            ctx.lineWidth = 2 * this.zoom;
+            ctx.setLineDash([4*this.zoom, 3*this.zoom]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.font = `bold ${Math.max(9, 10*this.zoom)}px Sarabun`;
+            ctx.fillStyle = '#6D28D9';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('บ่อพัก', pit.x*C, pit.y*C);
+        });
+
+        let dpCounter = 1;
+        this.lines.forEach(ln => {
+            if (ln.type === 'gutter' || ln.type === 'downpipe' || ln.type === 'arm' || ln.type === 'roof' || ln.type === 'pvc') {
+                ctx.beginPath();
+                ctx.moveTo(ln.x1 * C, ln.y1 * C);
+                ctx.lineTo(ln.x2 * C, ln.y2 * C);
+                const colorMap = { gutter: '#2563EB', downpipe: '#DC2626', arm: '#16A34A', roof: '#6B7280', pvc: '#22D3EE' };
+                ctx.lineWidth = (ln.type === 'gutter' ? 4 : ln.type === 'roof' ? 2 : ln.type === 'pvc' ? 3 : 3) * this.zoom;
+                ctx.strokeStyle = colorMap[ln.type] || '#2563EB';
+                ctx.lineCap = 'round';
+                ctx.setLineDash(ln.type === 'roof' ? [6*this.zoom, 4*this.zoom] : ln.type === 'pvc' ? [10*this.zoom, 4*this.zoom] : []);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                const mx = (ln.x1 + ln.x2)/2 * C, my = (ln.y1 + ln.y2)/2 * C;
+                ctx.font = `bold ${Math.max(11, 13 * this.zoom)}px Sarabun`;
+                ctx.textAlign = 'center';
+                const len = Math.hypot(ln.x2 - ln.x1, ln.y2 - ln.y1);
+
+                if (ln.type === 'arm') {
+                    const ang = Math.atan2(ln.y2 - ln.y1, ln.x2 - ln.x1);
+                    const perpX = -Math.sin(ang) * 18 * this.zoom;
+                    const perpY =  Math.cos(ang) * 18 * this.zoom;
+                    ctx.fillStyle = '#15803D';
+                    ctx.textBaseline = 'middle';
+                    ctx.font = `bold ${Math.max(11, 12 * this.zoom)}px Sarabun`;
+                    ctx.fillText(`${len.toFixed(2)}ม.`, mx + perpX, my + perpY);
+                    [[ln.x1*C, ln.y1*C, ang+Math.PI], [ln.x2*C, ln.y2*C, ang]].forEach(([ax, ay, a]) => {
+                        ctx.beginPath();
+                        ctx.moveTo(ax, ay);
+                        ctx.lineTo(ax + Math.cos(a-0.4)*10*this.zoom, ay + Math.sin(a-0.4)*10*this.zoom);
+                        ctx.moveTo(ax, ay);
+                        ctx.lineTo(ax + Math.cos(a+0.4)*10*this.zoom, ay + Math.sin(a+0.4)*10*this.zoom);
+                        ctx.strokeStyle = '#15803D';
+                        ctx.lineWidth = 2*this.zoom;
+                        ctx.stroke();
+                    });
+                } else if (ln.type === 'roof') {
+                    ctx.fillStyle = '#9CA3AF';
+                    ctx.textBaseline = 'alphabetic';
+                    ctx.font = `${Math.max(9, 11 * this.zoom)}px Sarabun`;
+                    ctx.fillText(len.toFixed(2) + 'ม.', mx, my - 5 * this.zoom);
+                } else if (ln.type === 'pvc') {
+                    ctx.fillStyle = '#0891B2';
+                    ctx.textBaseline = 'alphabetic';
+                    ctx.fillText(len.toFixed(2) + 'ม.', mx, my - 6 * this.zoom);
+                } else {
+                    ctx.fillStyle = ln.type === 'gutter' ? '#1D4ED8' : '#B91C1C';
+                    ctx.textBaseline = 'alphabetic';
+                    ctx.fillText(len.toFixed(2) + 'ม.', mx, my - 6 * this.zoom);
+                }
+
+                if (this.type === 'main' && ln.type === 'downpipe') {
+                    ctx.beginPath();
+                    ctx.arc(ln.x1 * C, ln.y1 * C, 18 * this.zoom, 0, Math.PI*2);
+                    ctx.fillStyle = '#DC2626';
+                    ctx.fill();
+                    ctx.fillStyle = 'white';
+                    ctx.font = `bold ${16 * this.zoom}px Sarabun`;
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(dpCounter, ln.x1 * C, ln.y1 * C);
+                    dpCounter++;
+                }
+
+                if (this.type === 'main' && ln.type === 'gutter') {
+                    const segLen = Math.hypot(ln.x2-ln.x1, ln.y2-ln.y1);
+                    const numHooks = Math.ceil(segLen / this.hookSpacing) + 1;
+                    const dx = ln.x2 - ln.x1, dy = ln.y2 - ln.y1;
+                    const ang = Math.atan2(dy, dx);
+                    const perpX = -Math.sin(ang);
+                    const perpY =  Math.cos(ang);
+                    const HOOK_HALF = 0.18 * C;
+                    ctx.strokeStyle = '#16A34A';
+                    ctx.lineWidth = 1.8 * this.zoom;
+                    ctx.lineCap = 'round';
+                    for (let hi = 0; hi < numHooks; hi++) {
+                        const t = numHooks === 1 ? 0.5 : hi / (numHooks - 1);
+                        const hx = (ln.x1 + t * dx) * C;
+                        const hy = (ln.y1 + t * dy) * C;
+                        ctx.beginPath();
+                        ctx.moveTo(hx - perpX * HOOK_HALF, hy - perpY * HOOK_HALF);
+                        ctx.lineTo(hx + perpX * HOOK_HALF, hy + perpY * HOOK_HALF);
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            if (ln.type === 'elbow' && ln.pts) {
+                const pts = ln.pts;
+                ctx.beginPath();
+                ctx.moveTo(pts[0].x * C, pts[0].y * C);
+                for (let i = 1; i < pts.length; i++) {
+                    ctx.lineTo(pts[i].x * C, pts[i].y * C);
+                }
+                ctx.strokeStyle = '#DC2626';
+                ctx.lineWidth = 3 * this.zoom;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.setLineDash([]);
+                ctx.stroke();
+
+                pts.forEach((pt, i) => {
+                    ctx.beginPath();
+                    ctx.arc(pt.x * C, pt.y * C, 5*this.zoom, 0, Math.PI*2);
+                    ctx.fillStyle = '#F59E0B';
+                    ctx.fill();
+                    ctx.strokeStyle = '#92400E';
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+                });
+
+                const cx2 = (pts[0].x + pts[1].x + pts[2].x + pts[3].x)/4 * C;
+                const cy2 = (pts[0].y + pts[1].y + pts[2].y + pts[3].y)/4 * C;
+                ctx.fillStyle = '#92400E';
+                ctx.font = `bold ${Math.max(11,12*this.zoom)}px Sarabun`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('4 ข้องอ', cx2, cy2);
+            }
+
+            if (this.type === 'main' && ln.type === 'hook') {
+                const gutters = this.lines.filter(l => l.type === 'gutter');
+                let bestAng = Math.PI / 2;
+                let bestDist = Infinity;
+                gutters.forEach(g => {
+                    const dx = g.x2-g.x1, dy = g.y2-g.y1, d2 = dx*dx+dy*dy||1;
+                    const t = Math.max(0,Math.min(1,((ln.x-g.x1)*dx+(ln.y-g.y1)*dy)/d2));
+                    const dist = Math.hypot(ln.x-(g.x1+t*dx), ln.y-(g.y1+t*dy));
+                    if (dist < bestDist) { bestDist = dist; bestAng = Math.atan2(dy, dx); }
+                });
+                const perpX = -Math.sin(bestAng);
+                const perpY =  Math.cos(bestAng);
+                const HOOK_HALF = 0.18 * C;
+                const hx = ln.x * C, hy = ln.y * C;
+                ctx.beginPath();
+                ctx.arc(hx, hy, 4 * this.zoom, 0, Math.PI*2);
+                ctx.fillStyle = '#15803D';
+                ctx.fill();
+                ctx.beginPath();
+                ctx.moveTo(hx - perpX * HOOK_HALF, hy - perpY * HOOK_HALF);
+                ctx.lineTo(hx + perpX * HOOK_HALF, hy + perpY * HOOK_HALF);
+                ctx.strokeStyle = '#15803D';
+                ctx.lineWidth = 2.5 * this.zoom;
+                ctx.lineCap = 'round';
+                ctx.stroke();
+            }
+        });
+
+        if (this.type === 'main' && this.corners) {
+            this.corners.forEach(c => {
+                const px = c.x * C;
+                const py = c.y * C;
+                const colorMap = { 'RVY':'#F59E0B', 'RVI':'#8B5CF6', 'RVY135':'#DC2626', 'RVI135':'#16A34A' };
+                const labelMap = { 'RVY':'นอก', 'RVI':'ใน', 'RVY135':'นอก135', 'RVI135':'ใน135' };
+                ctx.fillStyle = colorMap[c.type] || '#F59E0B';
+                ctx.beginPath();
+                ctx.arc(px, py, 13 * this.zoom, 0, Math.PI*2);
+                ctx.fill();
+                ctx.strokeStyle = '#FFFFFF';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+
+                ctx.fillStyle = 'white';
+                ctx.font = `bold ${10 * this.zoom}px Sarabun`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(labelMap[c.type] || c.type, px, py);
+            });
+        }
+
+        let noteIdx = 1;
+        this.lines.forEach(ln => {
+            if (ln.type === 'note') {
+                const x1 = ln.x1 * C, y1 = ln.y1 * C, x2 = ln.x2 * C, y2 = ln.y2 * C;
+                ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+                ctx.lineWidth = 1.5 * this.zoom; ctx.strokeStyle = '#6B7A99'; ctx.setLineDash([4,4]); ctx.stroke(); ctx.setLineDash([]);
+                ctx.beginPath(); ctx.arc(x1, y1, 4*this.zoom, 0, Math.PI*2); ctx.fillStyle='#6B7A99'; ctx.fill();
+
+                const text = `${noteIdx}. ${ln.text}`;
+                ctx.font = `bold ${Math.max(12, 14*this.zoom)}px Sarabun`;
+                const tw = ctx.measureText(text).width;
+                const th = 14 * this.zoom;
+                const padX = 8*this.zoom, padY = 6*this.zoom;
+                
+                ctx.fillStyle = 'rgba(255,255,255,0.95)'; ctx.strokeStyle='#9CA3AF'; ctx.lineWidth=1.5;
+                ctx.fillRect(x2, y2 - th/2 - padY, tw + padX*2, th + padY*2);
+                ctx.strokeRect(x2, y2 - th/2 - padY, tw + padX*2, th + padY*2);
+                ctx.fillStyle = '#1F2937'; ctx.textAlign='left'; ctx.textBaseline='middle';
+                ctx.fillText(text, x2 + padX, y2);
+                noteIdx++;
+            }
+        });
+
+        if (this.startPt && this.tool !== 'elbow') {
+            let ex = Math.round(this.mouseM.x / this.snapMode) * this.snapMode;
+            let ey = Math.round(this.mouseM.y / this.snapMode) * this.snapMode;
+
+            if (this.tool === 'roof') {
+                const roofLns = this.lines.filter(l => l.type === 'roof' && (l.houseIdx === this.activeHouseIdx || l.houseIdx === undefined));
+                if (roofLns.length >= 2) {
+                    const fp = { x: roofLns[0].x1, y: roofLns[0].y1 };
+                    const snapR = Math.max(this.snapMode * 1.5, 1.2);
+                    const dist = Math.hypot(this.mouseM.x - fp.x, this.mouseM.y - fp.y);
+                    if (dist <= snapR) {
+                        ex = fp.x; ey = fp.y;
+                        ctx.beginPath(); ctx.arc(fp.x * C, fp.y * C, 10 * this.zoom, 0, Math.PI*2);
+                        ctx.strokeStyle = '#22C55E'; ctx.lineWidth = 2.5; ctx.setLineDash([]); ctx.stroke();
+                        ctx.fillStyle = 'rgba(34,197,94,0.25)'; ctx.fill();
+                        ctx.fillStyle = '#22C55E'; ctx.font = `bold ${Math.max(10,11*this.zoom)}px Sarabun`;
+                        ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+                        ctx.fillText('คลิกปิดหลังคา', fp.x * C, fp.y * C - 12 * this.zoom);
+                    } else {
+                        ctx.beginPath(); ctx.arc(fp.x * C, fp.y * C, 7 * this.zoom, 0, Math.PI*2);
+                        ctx.strokeStyle = 'rgba(34,197,94,0.5)'; ctx.lineWidth = 1.5; ctx.setLineDash([3,3]); ctx.stroke(); ctx.setLineDash([]);
+                    }
+                }
+            }
+
+            ctx.beginPath(); ctx.moveTo(this.startPt.x * C, this.startPt.y * C); ctx.lineTo(ex * C, ey * C);
+            ctx.lineWidth = this.tool === 'note' ? 1.5 : 2;
+            
+            ctx.strokeStyle = this.tool === 'gutter' ? '#93C5FD' : 
+                              (this.tool === 'downpipe' ? '#FCA5A5' : 
+                              (this.tool === 'arm' ? '#86EFAC' : 
+                              (this.tool === 'roof' ? '#D1D5DB' : '#9CA3AF')));
+                              
+            ctx.setLineDash(this.tool === 'note' ? [4,4] : [6,4]); ctx.stroke(); ctx.setLineDash([]);
+
+            if (this.tool !== 'note') {
+                const len = Math.hypot(ex - this.startPt.x, ey - this.startPt.y);
+                this.parent.querySelector('.s-len').textContent = `ความยาว: ${len.toFixed(2)} ม.`;
+
+                if (this.tool === 'arm' && len > 0) {
+                    const ang = Math.atan2(ey - this.startPt.y, ex - this.startPt.x);
+                    const mx2 = (this.startPt.x + ex) / 2 * C;
+                    const my2 = (this.startPt.y + ey) / 2 * C;
+                    const perpX = -Math.sin(ang) * 20 * this.zoom;
+                    const perpY =  Math.cos(ang) * 20 * this.zoom;
+                    ctx.fillStyle = '#15803D';
+                    ctx.font = `bold ${Math.max(11, 12 * this.zoom)}px Sarabun`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(`${len.toFixed(2)}ม.`, mx2 + perpX, my2 + perpY);
+                }
+            }
+        }
+
+        if (this.tool === 'elbow') {
+            const bw = 1.0, bh = 1.0;
+            const px = Math.round(this.mouseM.x / this.snapMode) * this.snapMode;
+            const py = Math.round(this.mouseM.y / this.snapMode) * this.snapMode;
+            const epts = [{x:px,y:py},{x:px+bw,y:py},{x:px+bw,y:py+bh},{x:px,y:py+bh}];
+            ctx.beginPath();
+            ctx.moveTo(epts[0].x*C, epts[0].y*C);
+            epts.slice(1).forEach(p => ctx.lineTo(p.x*C, p.y*C));
+            ctx.strokeStyle = '#FCA5A5';
+            ctx.lineWidth = 2*this.zoom;
+            ctx.setLineDash([5*this.zoom, 3*this.zoom]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        if (this.tool === 'hook' && this.type === 'main') {
+            const gutters = this.lines.filter(l => l.type === 'gutter');
+            let bestSeg = null, bestT = 0, bestDist = 0.5;
+            gutters.forEach(ln => {
+                const dx = ln.x2-ln.x1, dy = ln.y2-ln.y1, d2 = dx*dx+dy*dy||1;
+                const t = Math.max(0,Math.min(1,((this.mouseM.x-ln.x1)*dx+(this.mouseM.y-ln.y1)*dy)/d2));
+                const dist = Math.hypot(this.mouseM.x-(ln.x1+t*dx), this.mouseM.y-(ln.y1+t*dy));
+                if (dist < bestDist) { bestDist = dist; bestSeg = ln; bestT = t; }
+            });
+            if (bestSeg) {
+                const dx = bestSeg.x2-bestSeg.x1, dy = bestSeg.y2-bestSeg.y1;
+                const hx = (bestSeg.x1 + bestT*dx) * C;
+                const hy = (bestSeg.y1 + bestT*dy) * C;
+                const ang = Math.atan2(dy, dx);
+                const perpX = -Math.sin(ang), perpY = Math.cos(ang);
+                const HOOK_HALF = 0.18 * C;
+                ctx.beginPath();
+                ctx.moveTo(hx - perpX*HOOK_HALF, hy - perpY*HOOK_HALF);
+                ctx.lineTo(hx + perpX*HOOK_HALF, hy + perpY*HOOK_HALF);
+                ctx.strokeStyle = 'rgba(21,128,61,0.6)';
+                ctx.lineWidth = 2.5 * this.zoom;
+                ctx.lineCap = 'round';
+                ctx.setLineDash([3*this.zoom, 2*this.zoom]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.beginPath();
+                ctx.arc(hx, hy, 5*this.zoom, 0, Math.PI*2);
+                ctx.fillStyle = 'rgba(21,128,61,0.5)';
+                ctx.fill();
+            }
+        }
+
+        const sx = Math.round(this.mouseM.x / this.snapMode) * this.snapMode;
+        const sy = Math.round(this.mouseM.y / this.snapMode) * this.snapMode;
+        ctx.beginPath(); ctx.arc(sx * C, sy * C, 4*this.zoom, 0, Math.PI*2);
+        ctx.fillStyle = this.snapMode === 0.2 ? 'rgba(52,211,153,0.9)' : this.snapMode === 0.5 ? 'rgba(252,211,77,0.8)' : 'rgba(100,149,237,0.5)';
+        ctx.fill();
+
+        if (this.type === 'sub') {
+            const BOX_W_M = 7, BOX_H_M = 12;
+            const bxPx = 0, byPx = 0;
+            const bwPx = BOX_W_M * C, bhPx = BOX_H_M * C;
+            const HEADER_H = 22 * this.zoom;
+
+            ctx.fillStyle = 'rgba(255,255,255,0.97)';
+            ctx.fillRect(bxPx, byPx, bwPx, bhPx);
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(bxPx, byPx + HEADER_H, bwPx, bhPx - HEADER_H);
+            ctx.clip();
+
+            const dpLines = this.lines.filter(l => l.type === 'downpipe');
+            if (dpLines.length > 0) {
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                dpLines.forEach(ln => {
+                    minX = Math.min(minX, ln.x1, ln.x2);
+                    minY = Math.min(minY, ln.y1, ln.y2);
+                    maxX = Math.max(maxX, ln.x1, ln.x2);
+                    maxY = Math.max(maxY, ln.y1, ln.y2);
+                });
+                const pipeW = maxX - minX || 0.1;
+                const pipeH = maxY - minY || 0.1;
+                const boxContentW = BOX_W_M - 2;
+                const boxContentH = BOX_H_M - 2 - HEADER_H/C;
+                const scaleX = boxContentW / pipeW;
+                const scaleY = boxContentH / pipeH;
+                const scale = Math.min(scaleX, scaleY, 1.0) * C;
+                const offsetX = bxPx + (bwPx - pipeW * scale) / 2 - minX * scale;
+                const offsetY = byPx + HEADER_H + (bhPx - HEADER_H - pipeH * scale) / 2 - minY * scale;
+
+                dpLines.forEach(ln => {
+                    ctx.beginPath();
+                    ctx.moveTo(ln.x1 * scale + offsetX, ln.y1 * scale + offsetY);
+                    ctx.lineTo(ln.x2 * scale + offsetX, ln.y2 * scale + offsetY);
+                    ctx.strokeStyle = '#DC2626';
+                    ctx.lineWidth = Math.max(2, 3 * this.zoom);
+                    ctx.lineCap = 'round';
+                    ctx.setLineDash([]);
+                    ctx.stroke();
+
+                    const len = Math.hypot(ln.x2-ln.x1, ln.y2-ln.y1);
+                    const mx2 = (ln.x1+ln.x2)/2 * scale + offsetX;
+                    const my2 = (ln.y1+ln.y2)/2 * scale + offsetY;
+                    ctx.fillStyle = '#B91C1C';
+                    ctx.font = `bold ${Math.max(11,12*this.zoom)}px Sarabun`;
+                    ctx.textAlign = 'left';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(len.toFixed(2)+' ม.', mx2 + 8*this.zoom, my2);
+                });
+            }
+
+            ctx.restore();
+
+            ctx.strokeStyle = '#1E3A8A';
+            ctx.lineWidth = 2.5;
+            ctx.setLineDash([]);
+            ctx.strokeRect(bxPx, byPx, bwPx, bhPx);
+
+            ctx.fillStyle = '#1E3A8A';
+            ctx.fillRect(bxPx, byPx, bwPx, HEADER_H);
+            ctx.fillStyle = 'white';
+            ctx.font = `bold ${Math.max(9,10*this.zoom)}px Sarabun`;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('🔒 ท่อลง (ล็อค)', bxPx + 6*this.zoom, byPx + HEADER_H/2);
+
+            this._lockBox = { wM: BOX_W_M, hM: BOX_H_M };
+        }
+    }
+
+    addNewHouse() {
+        const last = this.housePolys[this.housePolys.length - 1];
+        if (last && last.points.length === 0) {
+            this.activeHouseIdx = this.housePolys.length - 1;
+            this.setTool('house');
+            return;
+        }
+        this.saveHistory();
+        this.housePolys.push({ points: [], closed: false, floors: 1, roofType: 'ทรงจั่ว', roofDrawn: false });
+        this.activeHouseIdx = this.housePolys.length - 1;
+        this.setTool('house');
+        this.render();
+        onDataChanged();
+        saveData();
+        const sInfo = this.parent.querySelector('.s-info');
+        if (sInfo) sInfo.textContent = `🏠 เริ่มวาดบ้านหลังที่ ${this.activeHouseIdx + 1} — คลิกวางจุด`;
+        const ahp2 = this.housePolys[this.activeHouseIdx];
+        const floorsEl2 = this.parent.querySelector('#floors-select');
+        const roofEl2   = this.parent.querySelector('#roof-type-select');
+        if (floorsEl2 && ahp2) floorsEl2.value = ahp2.floors || 1;
+        if (roofEl2   && ahp2) roofEl2.value   = ahp2.roofType || 'ทรงจั่ว';
+    }
+}
+
+let mainApp;
+let subApps = [];
+
+function buildBOQSummary() {
+    const gutters = mainApp.lines.filter(l => l.type === 'gutter');
+    const gLen = gutters.reduce((s,l) => s + Math.hypot(l.x2-l.x1, l.y2-l.y1), 0);
+    const gPcs = Math.ceil(gLen / 5);
+    let totalJointsLine=0, totalHooks=0;
+    gutters.forEach(seg => {
+        const len = Math.hypot(seg.x2-seg.x1, seg.y2-seg.y1);
+        totalJointsLine += Math.max(0, Math.ceil(len/5) - 1);
+        totalHooks  += Math.ceil(len / mainApp.hookSpacing) + 1;
+    });
+    totalHooks += mainApp.lines.filter(l => l.type === 'hook').length;
+    const _hpFlat = (mainApp.housePolys||[]).reduce((a,hp)=>hp.closed?a.concat(hp.points):a,[]);
+    const _hpAnyC = (mainApp.housePolys||[]).some(hp=>hp.closed);
+    const cornerData = analyzeCorners(gutters, _hpFlat, _hpAnyC, mainApp);
+    const totalCornersForRSK = cornerData.outerCorners + cornerData.innerCorners
+                              + cornerData.outerCorners135 + cornerData.innerCorners135;
+    const totalJoints = totalJointsLine + (totalCornersForRSK * 2);
+    let dLen=0, totalElbows=0, dBrkt=0;
+    subApps.forEach(app => {
+        const dLines = app.lines.filter(l => l.type === 'downpipe');
+        const eLines = app.lines.filter(l => l.type === 'elbow' && l.pts);
+        dLines.forEach(seg => { dLen += Math.hypot(seg.x2-seg.x1, seg.y2-seg.y1); });
+        totalElbows += eLines.length * 4;
+        dBrkt += Math.ceil(dLen / 2.5) + 1;
+    });
+    const drainPts = subApps.length;
+    const dPcs = Math.ceil(dLen / 5);
+    return {
+        source: 'canvas',
+        gutter_length:    Math.round(gLen * 100) / 100,
+        gutter_pieces:    gPcs,
+        gutter_joints:    totalJoints,
+        hooks:            totalHooks,
+        end_caps:         cornerData.endCaps,
+        outer_corners:    cornerData.outerCorners,
+        inner_corners:    cornerData.innerCorners,
+        outer_corners135: cornerData.outerCorners135,
+        inner_corners135: cornerData.innerCorners135,
+        drain_points:     drainPts,
+        downpipe_length:  Math.round(dLen * 100) / 100,
+        downpipe_pieces:  dPcs,
+        downpipe_elbows:  totalElbows,
+        downpipe_brackets:dBrkt,
+        downpipe_sok:     drainPts,
+    };
+}
+
+function saveData(manual = false) {
+    if (!mainApp) return;
+    _flushSave(manual);
+}
+
+function _flushSave(manual = false) {
+    const data = {
+        mainLines: mainApp.lines,
+        housePolys: mainApp.housePolys,
+        cornerOverrides: mainApp.cornerOverrides,
+        hookSpacing: mainApp.hookSpacing,
+        subApps: subApps.map(app => ({ lines: app.lines }))
+    };
+    
+    localStorage.setItem('aqualine_proj_' + PROJECT_NAME.replace(/[^a-zA-Z0-9]/g, '_'), JSON.stringify(data));
+    const boq = buildBOQSummary();
+    localStorage.setItem('aqualine_boq_bridge_' + PROJECT_ID, JSON.stringify(boq));
+
+    if (manual) {
+        const c3d = document.getElementById('c3d');
+        const img3d = c3d ? c3d.toDataURL('image/png') : null;
+        Streamlit.setComponentValue({
+            action: "save",
+            boq: boq,
+            canvas_data: data,
+            image_3d: img3d
+        });
+    }
+}
+
+function loadData() {
+    let data = null;
+    if (SERVER_CANVAS_DATA && SERVER_CANVAS_DATA.mainLines) {
+        data = SERVER_CANVAS_DATA;
+    } else {
+        const raw = localStorage.getItem('aqualine_proj_' + PROJECT_NAME.replace(/[^a-zA-Z0-9]/g, '_'));
+        if (raw) { try { data = JSON.parse(raw); } catch(e) {} }
+    }
+
+    if (data) {
+        mainApp.lines          = data.mainLines       || [];
+        mainApp.hookSpacing    = data.hookSpacing     || 1.0;
+        const hookInput = document.getElementById('hook-spacing-input');
+        if (hookInput) hookInput.value = Math.round(mainApp.hookSpacing * 100);
+        if (data.housePolys && Array.isArray(data.housePolys)) {
+            mainApp.housePolys = data.housePolys.map(hp => ({
+                ...hp,
+                roofDrawn: hp.roofDrawn === true
+            }));
+        } else if (data.housePoly && data.housePoly.length > 0) {
+            mainApp.housePolys = [{ points: data.housePoly, closed: data.houseClosed || false }];
+        } else {
+            mainApp.housePolys = [{ points: [], closed: false }];
+        }
+        mainApp.activeHouseIdx = 0;
+        mainApp.cornerOverrides= data.cornerOverrides || {};
+        window.tempSubLines    = data.subApps         || [];
+    }
+}
+
+function init() {
+    mainApp = new CanvasApp('main-container', 'main', 'แปลนหลัก');
+    loadData();
+    onDataChanged();
+    if (mainApp) {
+        mainApp.render();
+        setTimeout(() => {
+            mainApp.centerViewport();
+        }, 100);
+    }
+}
+
+function onDataChanged() {
+    const dLines = mainApp.lines.filter(l => l.type === 'downpipe');
+    const drainPts = dLines.length;
+    const subsContainer = document.getElementById('subs-container');
+    const subsHeader = document.getElementById('subs-header');
+
+    subsHeader.style.display = drainPts > 0 ? 'block' : 'none';
+
+    while (subApps.length < drainPts) {
+        const idx = subApps.length;
+        const div = document.createElement('div');
+        div.id = `sub-canvas-${idx}`;
+        div.className = 'sub-wrap';
+        subsContainer.appendChild(div);
+        
+        const newApp = new CanvasApp(div.id, 'sub', `จุดลงท่อ ${idx + 1}`);
+        if (window.tempSubLines && window.tempSubLines[idx]) {
+            newApp.lines = window.tempSubLines[idx].lines;
+        } else {
+            const initLength = Math.hypot(dLines[idx].x2 - dLines[idx].x1, dLines[idx].y2 - dLines[idx].y1);
+            newApp.lines.push({type: 'downpipe', x1: 30, y1: 2, x2: 30, y2: 2 + initLength});
+        }
+        newApp.history.push({lines: JSON.parse(JSON.stringify(newApp.lines))}); 
+        subApps.push(newApp);
+        newApp.render();
+    }
+    
+    while (subApps.length > drainPts) {
+        const app = subApps.pop();
+        document.getElementById(app.domId).remove();
+    }
+    if (subApps.length >= drainPts) window.tempSubLines = null;
+    updateBOQ();
+}
+
+function updateBOQ() {
+    const gutters = mainApp.lines.filter(l => l.type === 'gutter');
+    const gLen = gutters.reduce((s,l) => s + Math.hypot(l.x2-l.x1, l.y2-l.y1), 0);
+    const gPcs = Math.ceil(gLen / 5);
+    
+    let totalJointsLine = 0, totalHooks = 0;
+    gutters.forEach(seg => { 
+        const len = Math.hypot(seg.x2-seg.x1, seg.y2-seg.y1);
+        totalJointsLine += Math.max(0, Math.ceil(len/5) - 1); 
+        totalHooks += Math.ceil(len / mainApp.hookSpacing) + 1;
+    });
+    // บวกตะขอ manual (วาดเพิ่มเอง)
+    const manualHooks = mainApp.lines.filter(l => l.type === 'hook').length;
+    totalHooks += manualHooks;
+
+    const hookLabelEl = document.getElementById('hook-label-spacing');
+    if (hookLabelEl) {
+        hookLabelEl.textContent = `(ทุก ${(mainApp.hookSpacing * 100).toFixed(0)} ซม.)`;
+    }
+
+    const _hpF2 = (mainApp.housePolys||[]).reduce((a,hp)=>hp.closed?a.concat(hp.points):a,[]);
+    const _hpC2 = (mainApp.housePolys||[]).some(hp=>hp.closed);
+    const cornerData = analyzeCorners(gutters, _hpF2, _hpC2, mainApp);
+    mainApp.corners = cornerData.list; 
+    
+    const endCaps = cornerData.endCaps;
+    const outerCorners = cornerData.outerCorners;
+    const innerCorners = cornerData.innerCorners;
+    const outerCorners135 = cornerData.outerCorners135;
+    const innerCorners135 = cornerData.innerCorners135;
+    // RSK จากมุมทุกชนิด (90° และ 135°) = 2 ชิ้น/มุม
+    const totalCornersForRSK = outerCorners + innerCorners + outerCorners135 + innerCorners135;
+    const totalJoints = totalJointsLine + (totalCornersForRSK * 2);
+
+    let dLen = 0, totalBends = 0, dBrkt = 0, totalElbows = 0, totalArmLen = 0;
+    let breakdownHtml = '';
+    
+    subApps.forEach((app, idx) => {
+        const dLines = app.lines.filter(l => l.type === 'downpipe');
+        const eLines = app.lines.filter(l => l.type === 'elbow' && l.pts);
+        const aLines = app.lines.filter(l => l.type === 'arm');
+        let subLen = 0;
+        dLines.forEach(seg => {
+            const l = Math.hypot(seg.x2-seg.x1, seg.y2-seg.y1);
+            subLen += l;
+        });
+        
+        const elbowCount = eLines.length * 4;
+        let armTotalLen = 0;
+        aLines.forEach(seg => {
+            armTotalLen += Math.hypot(seg.x2-seg.x1, seg.y2-seg.y1);
+        });
+
+        dLen += subLen;
+        totalElbows += elbowCount;
+        totalArmLen += armTotalLen;
+        dBrkt += Math.ceil(subLen / 2.5) + 1; 
+        
+        breakdownHtml += `<div class="boq-sub-row"><span>↳ จุดที่ ${idx + 1}</span> <span class="boq-val">${subLen.toFixed(2)} ม.</span></div>`;
+        if (elbowCount > 0) breakdownHtml += `<div class="boq-sub-row"><span>&nbsp;&nbsp;ข้องอหลบบัว จุดที่ ${idx+1}</span> <span class="boq-val" style="color:#D97706;">${elbowCount} ตัว</span></div>`;
+        if (armTotalLen > 0) breakdownHtml += `<div class="boq-sub-row"><span>&nbsp;&nbsp;ความยาวแขน จุดที่ ${idx+1}</span> <span class="boq-val" style="color:#16A34A;">${armTotalLen.toFixed(2)} ม.</span></div>`;
+
+        const elbowCntEl = document.getElementById('elbow-cnt-' + app.domId);
+        const armLenEl = document.getElementById('arm-len-' + app.domId);
+        if (elbowCntEl) elbowCntEl.textContent = elbowCount;
+        if (armLenEl) armLenEl.textContent = armTotalLen.toFixed(2);
+
+        const dPts = [];
+        dLines.forEach((ln, i) => {
+            dPts.push({x: ln.x1, y: ln.y1});
+            dPts.push({x: ln.x2, y: ln.y2});
+        });
+        const v = new Array(dPts.length).fill(false);
+        for (let i = 0; i < dPts.length; i++) {
+            if (v[i]) continue;
+            let groupSize = 1; v[i] = true;
+            for (let j = i+1; j < dPts.length; j++) {
+                if (!v[j] && ptNear(dPts[i].x, dPts[i].y, dPts[j].x, dPts[j].y)) {
+                    groupSize++; v[j] = true;
+                }
+            }
+            if (groupSize >= 2) totalBends++; 
+        }
+    });
+
+    const drainPts = subApps.length;
+    const dPcs = Math.ceil(dLen / 5);
+    const dSOK = drainPts;       // SOK 1 ชิ้น/จุด
+    totalBends = drainPts * 2;   // BK 2 ชิ้น/จุด
+
+    document.getElementById('b-gl').textContent = gLen.toFixed(2) + ' ม.';
+    document.getElementById('b-gp').textContent = gPcs + ' ท่อน';
+    document.getElementById('b-jo').textContent = totalJoints + ' ชิ้น';
+    document.getElementById('b-hk').textContent = totalHooks + ' ตัว';
+    document.getElementById('b-ec').textContent = endCaps + ' ชิ้น';
+    document.getElementById('b-ov').textContent = outerCorners + ' ชิ้น';
+    document.getElementById('b-iv').textContent = innerCorners + ' ชิ้น';
+    document.getElementById('b-ov135').textContent = outerCorners135 + ' ชิ้น';
+    document.getElementById('b-iv135').textContent = innerCorners135 + ' ชิ้น';
+    document.getElementById('b-dl').textContent = dLen.toFixed(2) + ' ม.';
+    document.getElementById('boq-dp-breakdown').innerHTML = breakdownHtml; 
+    document.getElementById('b-dp').textContent = dPcs + ' ท่อน';
+    document.getElementById('b-dd').textContent = dSOK + ' จุด';
+    document.getElementById('b-bk').textContent = totalBends + ' ชิ้น';
+    document.getElementById('b-elbow').textContent = totalElbows + ' ตัว';
+    document.getElementById('b-br').textContent = dBrkt + ' ตัว';
+    document.getElementById('b-arm').textContent = totalArmLen.toFixed(2) + ' ม.';
+    document.getElementById('b-utk').textContent = drainPts + ' ชิ้น';
+
+    // ── PVC calculation ──
+    const pvcLines = mainApp.lines.filter(l => l.type === 'pvc');
+    const pvcLen = pvcLines.reduce((s, l) => s + Math.hypot(l.x2-l.x1, l.y2-l.y1), 0);
+    const pvcPcs = Math.ceil(pvcLen / 4);
+    // ท่อต่อตรง = จำนวนต่อระหว่างท่อน (pvcPcs - 1 ต่อ segment chain, เอาแบบง่ายก่อน)
+    const pvcJoin = Math.max(0, pvcPcs - pvcLines.length);
+
+    // วิเคราะห์มุม PVC — นับจากจุดที่เส้น PVC ต่อกัน
+    let pvc90 = 0, pvc45 = 0;
+    if (pvcLines.length >= 2) {
+        const NK2 = (x,y) => `${x.toFixed(2)},${y.toFixed(2)}`;
+        const pvcNodeMap = {};
+        pvcLines.forEach(l => {
+            [[l.x1,l.y1],[l.x2,l.y2]].forEach(([px,py]) => {
+                const k = NK2(px,py);
+                if (!pvcNodeMap[k]) pvcNodeMap[k] = { x:px, y:py, segs:[] };
+                pvcNodeMap[k].segs.push(l);
+            });
+        });
+        Object.values(pvcNodeMap).forEach(node => {
+            if (node.segs.length < 2) return;
+            const nk = NK2(node.x, node.y);
+            for (let i = 0; i < node.segs.length; i++) {
+                for (let j = i+1; j < node.segs.length; j++) {
+                    const la = node.segs[i], lb = node.segs[j];
+                    // vector ออกจาก node ตามแต่ละเส้น
+                    const ax = NK2(la.x1,la.y1)===nk ? la.x2-la.x1 : la.x1-la.x2;
+                    const ay = NK2(la.y1,la.y1)===nk ? la.y2-la.y1 : la.y1-la.y2;
+                    const bx = NK2(lb.x1,lb.y1)===nk ? lb.x2-lb.x1 : lb.x1-lb.x2;
+                    const by = NK2(lb.y1,lb.y1)===nk ? lb.y2-lb.y1 : lb.y1-lb.y2;
+                    const dot = ax*bx + ay*by;
+                    const mag = (Math.hypot(ax,ay) * Math.hypot(bx,by)) || 1;
+                    // angleDeg คือมุมระหว่าง vector ทั้งสอง (0°=ทิศเดียวกัน, 90°=ฉาก, 180°=ตรงข้าม)
+                    const angleDeg = Math.acos(Math.max(-1, Math.min(1, dot/mag))) * 180/Math.PI;
+                    const TOL = 10; // tolerance ±10° ถือว่าเป็น 90°
+                    if (Math.abs(angleDeg - 90) <= TOL) {
+                        pvc90++; // ฉากพอดี → ข้องอ 90°
+                    } else if (angleDeg > TOL && angleDeg < 180 - TOL) {
+                        pvc45++; // มีการหักมุมแต่ไม่ฉาก → ข้องอ 45°
+                    }
+                    // angleDeg ≈ 0 หรือ 180 = เส้นตรง ไม่นับ
+                }
+            }
+        });
+    }
+
+    const pvcPits = mainApp.lines.filter(l => l.type === 'pit').length;
+
+    document.getElementById('b-pvc-len').textContent = pvcLen.toFixed(2) + ' ม.';
+    document.getElementById('b-pvc-pcs').textContent = pvcPcs + ' ท่อน';
+    document.getElementById('b-pvc-join').textContent = pvcJoin + ' ชิ้น';
+    document.getElementById('b-pvc-90').textContent = pvc90 + ' ชิ้น';
+    document.getElementById('b-pvc-45').textContent = pvc45 + ' ชิ้น';
+    document.getElementById('b-pvc-pit').textContent = pvcPits + ' บ่อ';
+
+    let notesHtml = '';
+    const mNotes = mainApp.lines.filter(l => l.type === 'note');
+    if (mNotes.length) {
+        notesHtml += `<div class="note-source">📌 แปลนหลัก</div>`;
+        mNotes.forEach((n, i) => notesHtml += `<div class="note-item">${i+1}. ${n.text}</div>`);
+    }
+    subApps.forEach((app, idx) => {
+        const sNotes = app.lines.filter(l => l.type === 'note');
+        if (sNotes.length) {
+            notesHtml += `<div class="note-source">📌 จุดลงท่อ ${idx+1}</div>`;
+            sNotes.forEach((n, i) => notesHtml += `<div class="note-item">${i+1}. ${n.text}</div>`);
+        }
+    });
+    
+    document.getElementById('note-list').innerHTML = notesHtml || '<div style="color:#9CA3AF;font-style:italic;text-align:center;padding:10px 0;">ไม่มีหมายเหตุ</div>';
+
+    mainApp.render();
+    render3D();
+    autoSaveToStorage();
+}
+
+
+// ══════════════════════════════════════════════════════════
+// 3D ISOMETRIC RENDERER (real-time, read-only)
+// อ้างอิงข้อมูลจาก mainApp.housePolys + mainApp.lines
+// ══════════════════════════════════════════════════════════
+const c3d = document.getElementById('c3d');
+const ctx3 = c3d ? c3d.getContext('2d') : null;
+
+let _aY = 0.6, _aX = 0.42, _sc = 22;  // aY=0.6; negate X ทำให้ซ้าย/ขวาตรงกับ 2D
+let _drag3 = false, _lx3 = 0, _ly3 = 0;
+let _pan3 = false, _px3 = 0, _py3 = 0;  // pan offset
+let _offX3 = 0, _offY3 = 0;             // world offset
+const FLOOR_H = 3.0; // เมตรต่อชั้น
+const ROOF_PEAK = 2.2;
+const GUTTER_Y_OFF = 0.15; // ราง ลอยเหนือขอบผนัง
+
+function _proj3(wx, wy, wz, cx, cz) {
+    const x = (wx - cx), y = wy, z = (wz - cz);  // ไม่ negate: ขวา2D=ขวา3D, aY=0.6 หันหน้า
+    const x1 = x * Math.cos(_aY) + z * Math.sin(_aY);
+    const z1 = -x * Math.sin(_aY) + z * Math.cos(_aY);
+    const y2 = y * Math.cos(_aX) - z1 * Math.sin(_aX);
+    return { sx: c3d.width / 2 + x1 * _sc + _offX3, sy: c3d.height / 2 - 30 - y2 * _sc + _offY3 };
+}
+
+function _ln3(x1,y1,z1, x2,y2,z2, cx,cz, col, lw) {
+    if (!ctx3) return;
+    const a = _proj3(x1,y1,z1,cx,cz), b = _proj3(x2,y2,z2,cx,cz);
+    ctx3.beginPath(); ctx3.moveTo(a.sx,a.sy); ctx3.lineTo(b.sx,b.sy);
+    ctx3.strokeStyle = col; ctx3.lineWidth = lw; ctx3.lineCap = 'round'; ctx3.stroke();
+}
+
+function render3D() {
+    if (!ctx3 || !mainApp) return;
+    ctx3.clearRect(0, 0, c3d.width, c3d.height);
+
+    const polys   = mainApp.housePolys || [];
+    const gutters = mainApp.lines.filter(l => l.type === 'gutter');
+    const dpipes  = mainApp.lines.filter(l => l.type === 'downpipe');
+
+    // หา bounding box รวม
+    const allX = [], allZ = [];
+    polys.forEach(hp => hp.points.forEach(p => { allX.push(p.x); allZ.push(p.y); }));
+    gutters.forEach(l => { allX.push(l.x1,l.x2); allZ.push(l.y1,l.y2); });
+    if (allX.length === 0) {
+        ctx3.fillStyle = '#1E3A8A'; ctx3.font = '13px Sarabun';
+        ctx3.textAlign = 'center';
+        ctx3.fillText('วาดทรงบ้านในจอด้านบน เพื่อดู 3D ที่นี่', c3d.width/2, c3d.height/2);
+        return;
+    }
+    const cx = (Math.min(...allX) + Math.max(...allX)) / 2;
+    const cz = (Math.min(...allZ) + Math.max(...allZ)) / 2;
+
+    // ─ grid พื้น (เบาๆ) ─
+    ctx3.globalAlpha = 0.12;
+    const gMin = Math.floor(Math.min(...allX, ...allZ)) - 2;
+    const gMax = Math.ceil(Math.max(...allX, ...allZ)) + 2;
+    for (let g = gMin; g <= gMax; g++) {
+        _ln3(g,-0.05,gMin, g,-0.05,gMax, cx,cz, '#6B7A99', 0.5);
+        _ln3(gMin,-0.05,g, gMax,-0.05,g, cx,cz, '#6B7A99', 0.5);
+    }
+    ctx3.globalAlpha = 1;
+
+    // ─ วาดแต่ละบ้าน ─
+    polys.forEach(hp => {
+        if (!hp.closed || hp.points.length < 3) return;
+        const pts = hp.points;
+        const n   = pts.length;
+        const floors   = hp.floors   || 1;
+        const wallH    = floors * FLOOR_H;
+        const roofType = hp.roofType || 'ทรงจั่ว';
+        const gutterY  = wallH + GUTTER_Y_OFF;
+
+        // ผนัง
+        for (let i = 0; i < n; i++) {
+            const a = pts[i], b = pts[(i+1)%n];
+            const p0 = _proj3(a.x,0,a.y,cx,cz), p1 = _proj3(b.x,0,b.y,cx,cz);
+            const p2 = _proj3(b.x,wallH,b.y,cx,cz), p3 = _proj3(a.x,wallH,a.y,cx,cz);
+            ctx3.beginPath();
+            ctx3.moveTo(p0.sx,p0.sy); ctx3.lineTo(p1.sx,p1.sy);
+            ctx3.lineTo(p2.sx,p2.sy); ctx3.lineTo(p3.sx,p3.sy); ctx3.closePath();
+            // แรเงาตามทิศ
+            const angle = Math.atan2(b.y - a.y, b.x - a.x);
+            const shade = (Math.cos(angle - _aY) > 0) ? 0.42 : 0.28;
+            ctx3.fillStyle = `rgba(148,163,184,${shade})`; ctx3.fill();
+            ctx3.strokeStyle = '#94A3B8'; ctx3.lineWidth = 1.2; ctx3.stroke();
+        }
+
+        // หลังคา — แสดงเฉพาะเมื่อผู้ใช้วาดหลังคาปิดครบแล้ว
+        if (!hp.roofDrawn) {
+            // fallback: ตรวจจาก roof lines จริง — หาว่า endpoint ปิดครบไหม
+            const hIdx = polys.indexOf(hp);
+            const roofLns = mainApp.lines.filter(l => l.type === 'roof' &&
+                (l.houseIdx === hIdx || l.houseIdx === undefined));
+            if (roofLns.length >= 3) {
+                // เก็บ endpoints ทั้งหมด แล้วตรวจว่าทุก endpoint มีคู่ที่ใกล้กันใน TOL
+                const eps = [];
+                roofLns.forEach(l => {
+                    eps.push({x:l.x1, y:l.y1});
+                    eps.push({x:l.x2, y:l.y2});
+                });
+                const TOL3D = 1.5;
+                const paired = eps.map((_,i) =>
+                    eps.some((e2, j) => j !== i && Math.hypot(eps[i].x-e2.x, eps[i].y-e2.y) <= TOL3D)
+                );
+                if (paired.every(Boolean)) hp.roofDrawn = true;
+            }
+            if (!hp.roofDrawn) return;
+        }
+        // ─── ดึง roof lines จริงที่วาดในจอ 2D เพื่อสร้าง eave polygon ──
+        const hIdx3D = polys.indexOf(hp);
+        const roofLns3D = mainApp.lines.filter(l =>
+            l.type === 'roof' && (l.houseIdx === hIdx3D || l.houseIdx === undefined));
+
+        // สร้าง polygon จาก roof lines (chain endpoints)
+        let eavePts = [];
+        if (roofLns3D.length >= 3) {
+            const epMap = {};
+            roofLns3D.forEach(l => {
+                const k1 = `${l.x1.toFixed(2)},${l.y1.toFixed(2)}`;
+                const k2 = `${l.x2.toFixed(2)},${l.y2.toFixed(2)}`;
+                if (!epMap[k1]) epMap[k1] = {x:l.x1, y:l.y1, segs:[]};
+                if (!epMap[k2]) epMap[k2] = {x:l.x2, y:l.y2, segs:[]};
+                epMap[k1].segs.push({nx:l.x2, ny:l.y2});
+                epMap[k2].segs.push({nx:l.x1, ny:l.y1});
+            });
+            const keys = Object.keys(epMap);
+            const visited = {};
+            let curKey = keys[0];
+            let safety = 0;
+            while (safety++ < 60) {
+                const node = epMap[curKey];
+                if (!node) break;
+                eavePts.push({x: node.x, y: node.y});
+                visited[curKey] = true;
+                const nextSeg = node.segs.find(s => {
+                    const nk = `${s.nx.toFixed(2)},${s.ny.toFixed(2)}`;
+                    return !visited[nk];
+                });
+                if (!nextSeg) break;
+                curKey = `${nextSeg.nx.toFixed(2)},${nextSeg.ny.toFixed(2)}`;
+            }
+        }
+        if (eavePts.length < 3) eavePts = pts; // fallback ถ้า chain ล้มเหลว
+
+        const en = eavePts.length;
+        const rcx = eavePts.reduce((s,p)=>s+p.x,0)/en;
+        const rcz = eavePts.reduce((s,p)=>s+p.y,0)/en;
+        const ridgeY = wallH + ROOF_PEAK;
+
+        if (roofType === 'ทรงแบน') {
+            ctx3.beginPath();
+            const s0 = _proj3(eavePts[0].x, wallH, eavePts[0].y, cx, cz);
+            ctx3.moveTo(s0.sx, s0.sy);
+            for (let i=1; i<en; i++) {
+                const s = _proj3(eavePts[i].x, wallH, eavePts[i].y, cx, cz);
+                ctx3.lineTo(s.sx, s.sy);
+            }
+            ctx3.closePath();
+            ctx3.fillStyle = 'rgba(100,116,139,0.55)'; ctx3.fill();
+            ctx3.strokeStyle = '#475569'; ctx3.lineWidth = 1.5; ctx3.stroke();
+            // slope arrows จากกลางหลังคาออกทุกด้าน
+            const SLOPE_RISE = 0.08;
+            ctx3.setLineDash([4,4]);
+            ctx3.strokeStyle = '#FCD34D'; ctx3.lineWidth = 1.5;
+            for (let i=0; i<en; i++) {
+                const a=eavePts[i], b=eavePts[(i+1)%en];
+                const ex=(a.x+b.x)/2, ez=(a.y+b.y)/2;
+                const pStart=_proj3(rcx, wallH+SLOPE_RISE, rcz, cx, cz);
+                const pEnd  =_proj3(ex,  wallH, ez, cx, cz);
+                ctx3.beginPath(); ctx3.moveTo(pStart.sx,pStart.sy); ctx3.lineTo(pEnd.sx,pEnd.sy); ctx3.stroke();
+                const ang=Math.atan2(pEnd.sy-pStart.sy, pEnd.sx-pStart.sx);
+                ctx3.setLineDash([]);
+                ctx3.beginPath(); ctx3.moveTo(pEnd.sx,pEnd.sy);
+                ctx3.lineTo(pEnd.sx-10*Math.cos(ang-0.4), pEnd.sy-10*Math.sin(ang-0.4));
+                ctx3.lineTo(pEnd.sx-10*Math.cos(ang+0.4), pEnd.sy-10*Math.sin(ang+0.4));
+                ctx3.closePath(); ctx3.fillStyle='#FCD34D'; ctx3.fill();
+                ctx3.setLineDash([4,4]);
+            }
+            ctx3.setLineDash([]);
+
+        } else if (roofType === 'ทรงเพิงหมาแหงน') {
+            const zMin3 = Math.min(...eavePts.map(p=>p.y));
+            const zMax3 = Math.max(...eavePts.map(p=>p.y));
+            const zRange = zMax3 - zMin3 || 1;
+            for (let i=0; i<en; i++) {
+                const a=eavePts[i], b=eavePts[(i+1)%en];
+                const hA = wallH + ROOF_PEAK * (a.y - zMin3) / zRange;
+                const hB = wallH + ROOF_PEAK * (b.y - zMin3) / zRange;
+                const p0=_proj3(a.x,wallH,a.y,cx,cz), p1=_proj3(b.x,wallH,b.y,cx,cz);
+                const p2=_proj3(b.x,hB,b.y,cx,cz),   p3=_proj3(a.x,hA,a.y,cx,cz);
+                ctx3.beginPath();
+                ctx3.moveTo(p0.sx,p0.sy);ctx3.lineTo(p1.sx,p1.sy);
+                ctx3.lineTo(p2.sx,p2.sy);ctx3.lineTo(p3.sx,p3.sy);ctx3.closePath();
+                const faceShade = (Math.cos(Math.atan2(b.y-a.y,b.x-a.x) - _aY) > 0) ? 0.55 : 0.35;
+                ctx3.fillStyle=`rgba(96,165,250,${faceShade})`;ctx3.fill();
+                ctx3.strokeStyle='#2563EB';ctx3.lineWidth=1;ctx3.stroke();
+            }
+            const sHigh=_proj3(rcx, wallH+ROOF_PEAK, rcz+(zRange*0.3), cx, cz);
+            const sLow =_proj3(rcx, wallH+ROOF_PEAK*0.1, rcz-(zRange*0.3), cx, cz);
+            ctx3.setLineDash([5,5]); ctx3.strokeStyle='#FCD34D'; ctx3.lineWidth=2;
+            ctx3.beginPath(); ctx3.moveTo(sHigh.sx,sHigh.sy); ctx3.lineTo(sLow.sx,sLow.sy); ctx3.stroke();
+            ctx3.setLineDash([]);
+            const angSlp=Math.atan2(sLow.sy-sHigh.sy,sLow.sx-sHigh.sx);
+            ctx3.beginPath(); ctx3.moveTo(sLow.sx,sLow.sy);
+            ctx3.lineTo(sLow.sx-12*Math.cos(angSlp-0.4),sLow.sy-12*Math.sin(angSlp-0.4));
+            ctx3.lineTo(sLow.sx-12*Math.cos(angSlp+0.4),sLow.sy-12*Math.sin(angSlp+0.4));
+            ctx3.closePath(); ctx3.fillStyle='#FCD34D'; ctx3.fill();
+
+        } else if (roofType === 'ทรงจั่ว') {
+            // ทรงจั่ว: eave แต่ละด้านลาดขึ้นยอดกลาง — ไม่มีเส้น ridge ลอย (Fix 3)
+            for (let i=0; i<en; i++) {
+                const a=eavePts[i], b=eavePts[(i+1)%en];
+                const p0=_proj3(a.x,wallH,a.y,cx,cz);
+                const p1=_proj3(b.x,wallH,b.y,cx,cz);
+                const p2=_proj3(rcx,ridgeY,rcz,cx,cz);
+                ctx3.beginPath();
+                ctx3.moveTo(p0.sx,p0.sy);ctx3.lineTo(p1.sx,p1.sy);ctx3.lineTo(p2.sx,p2.sy);ctx3.closePath();
+                const shade3d = i%2===0 ? 'rgba(96,165,250,0.65)' : 'rgba(37,99,235,0.4)';
+                ctx3.fillStyle=shade3d;ctx3.fill();
+                ctx3.strokeStyle='#1D4ED8';ctx3.lineWidth=1;ctx3.stroke();
+            }
+            // ไม่วาดเส้น ridge แยก — ขอบ face ที่ชนกันที่ยอดก็คือ ridge แล้ว
+
+        } else {
+            // ทรงปั้นหยา / ปั้นหยาตัวแอล: ลาดลงจากยอดกลาง
+            for (let i=0; i<en; i++) {
+                const a=eavePts[i], b=eavePts[(i+1)%en];
+                const p0=_proj3(a.x,wallH,a.y,cx,cz), p1=_proj3(b.x,wallH,b.y,cx,cz);
+                const p2=_proj3(rcx,ridgeY,rcz,cx,cz);
+                ctx3.beginPath();
+                ctx3.moveTo(p0.sx,p0.sy);ctx3.lineTo(p1.sx,p1.sy);ctx3.lineTo(p2.sx,p2.sy);ctx3.closePath();
+                const ang4=Math.atan2(b.y-a.y,b.x-a.x);
+                const lit4=(Math.cos(ang4-_aY)>0)?0.7:0.45;
+                ctx3.fillStyle=`rgba(180,140,90,${lit4})`;ctx3.fill();
+                ctx3.strokeStyle='#92400E';ctx3.lineWidth=1;ctx3.stroke();
+            }
+        }
+    });
+
+    // ─ ราง (เส้นน้ำเงินหนา) ─
+    // แต่ละ segment ของราง ค้นหา poly ที่ปิดแล้วและใกล้ที่สุด → ใช้ความสูงของ poly นั้น
+    function getGutterY(gx, gz) {
+        let best = null, bestDist = Infinity;
+        polys.forEach(hp => {
+            if (!hp.closed || hp.points.length < 3) return;
+            // หา centroid ของ poly
+            const pcx = hp.points.reduce((s,p)=>s+p.x,0)/hp.points.length;
+            const pcz = hp.points.reduce((s,p)=>s+p.y,0)/hp.points.length;
+            const dist = Math.hypot(gx - pcx, gz - pcz);
+            if (dist < bestDist) { bestDist = dist; best = hp; }
+        });
+        if (best) return (best.floors||1) * FLOOR_H + GUTTER_Y_OFF;
+        const firstClosed2 = polys.find(hp => hp.closed);
+        return firstClosed2 ? ((firstClosed2.floors||1)*FLOOR_H + GUTTER_Y_OFF) : 3.2;
+    }
+    gutters.forEach(g => {
+        const gmx = (g.x1+g.x2)/2, gmz = (g.y1+g.y2)/2;
+        const gutterY = getGutterY(gmx, gmz);
+        _ln3(g.x1,gutterY,g.y1, g.x2,gutterY,g.y2, cx,cz, 'rgba(37,99,235,0.25)', 10);
+        _ln3(g.x1,gutterY,g.y1, g.x2,gutterY,g.y2, cx,cz, '#2563EB', 4);
+        [_proj3(g.x1,gutterY,g.y1,cx,cz), _proj3(g.x2,gutterY,g.y2,cx,cz)].forEach(p => {
+            ctx3.beginPath(); ctx3.arc(p.sx,p.sy,4,0,Math.PI*2);
+            ctx3.fillStyle='#1D4ED8'; ctx3.fill();
+        });
+    });
+
+    // ─ ท่อลง (แดง) แบบ L-shape: จากราง → เฉียงเข้าผนัง → ลงตรง ─
+    dpipes.forEach(dp => {
+        const dpGutterY = getGutterY(dp.x1, dp.y1);
+
+        // หาผนังบ้านที่ใกล้ที่สุด แล้วให้ normal ชี้เข้าหา centroid ของบ้าน
+        let wallNx = 0, wallNz = 1;
+        let bestWallDist = Infinity;
+        polys.forEach(hp => {
+            if (!hp.closed || hp.points.length < 3) return;
+            const pts2 = hp.points;
+            const np = pts2.length;
+            // centroid ของบ้าน
+            const hcx = pts2.reduce((s,p)=>s+p.x,0)/np;
+            const hcz = pts2.reduce((s,p)=>s+p.y,0)/np;
+            for (let i = 0; i < np; i++) {
+                const a = pts2[i], b = pts2[(i+1)%np];
+                const mx = (a.x+b.x)/2, mz = (a.y+b.y)/2;
+                const dist = Math.hypot(dp.x1-mx, dp.y1-mz);
+                if (dist < bestWallDist) {
+                    bestWallDist = dist;
+                    // vector จากจุดท่อลง → centroid บ้าน = ทิศเข้าบ้านเสมอ
+                    const dx = hcx - dp.x1, dz = hcz - dp.y1;
+                    const len = Math.hypot(dx, dz) || 1;
+                    wallNx = dx / len;
+                    wallNz = dz / len;
+                }
+            }
+        });
+
+        // หาจุดบนผนังที่ใกล้จุดท่อลงมากที่สุด → เส้นตรงลงอยู่ชิดผนังพอดี
+        let elbowX = dp.x1 + wallNx * 0.3;
+        let elbowZ = dp.y1 + wallNz * 0.3;
+        let bestProjDist = Infinity;
+        polys.forEach(hp => {
+            if (!hp.closed || hp.points.length < 3) return;
+            const pts2 = hp.points, np = pts2.length;
+            for (let i = 0; i < np; i++) {
+                const a = pts2[i], b = pts2[(i+1)%np];
+                const ex = b.x-a.x, ez = b.y-a.y, elen2 = ex*ex+ez*ez||1;
+                const t = Math.max(0, Math.min(1, ((dp.x1-a.x)*ex+(dp.y1-a.y)*ez)/elen2));
+                const px = a.x + t*ex, pz = a.y + t*ez;
+                const dist = Math.hypot(dp.x1-px, dp.y1-pz);
+                if (dist < bestProjDist) {
+                    bestProjDist = dist;
+                    elbowX = px;
+                    elbowZ = pz;
+                }
+            }
+        });
+        const elbowY = dpGutterY - 0.25; // ลงมาเล็กน้อยก่อนหัก
+
+        // เส้นที่ 1: จากราง → จุดหักมุม (เฉียงเข้าผนัง)
+        _ln3(dp.x1,dpGutterY,dp.y1, elbowX,elbowY,elbowZ, cx,cz, 'rgba(220,38,38,0.2)',8);
+        _ln3(dp.x1,dpGutterY,dp.y1, elbowX,elbowY,elbowZ, cx,cz, '#DC2626', 3);
+
+        // เส้นที่ 2: จากจุดหักมุม → ลงตรงถึงพื้น
+        _ln3(elbowX,elbowY,elbowZ, elbowX,0.2,elbowZ, cx,cz, 'rgba(220,38,38,0.2)',8);
+        _ln3(elbowX,elbowY,elbowZ, elbowX,0.2,elbowZ, cx,cz, '#DC2626', 3);
+
+        // จุดล่างสุด
+        const bot = _proj3(elbowX, 0.2, elbowZ, cx, cz);
+        ctx3.beginPath(); ctx3.arc(bot.sx,bot.sy,5,0,Math.PI*2);
+        ctx3.fillStyle='#DC2626'; ctx3.fill();
+
+        // จุดหักมุม (แสดงข้อต่อ)
+        const elb = _proj3(elbowX, elbowY, elbowZ, cx, cz);
+        ctx3.beginPath(); ctx3.arc(elb.sx,elb.sy,4,0,Math.PI*2);
+        ctx3.fillStyle='#F87171'; ctx3.fill();
+    });
+
+    // ─ ท่อ PVC (เส้นฟ้าอ่อน บนพื้น y=0.05) ─
+    const pvcLines3D = mainApp.lines.filter(l => l.type === 'pvc');
+    pvcLines3D.forEach(l => {
+        _ln3(l.x1,0.05,l.y1, l.x2,0.05,l.y2, cx,cz, 'rgba(34,211,238,0.3)', 8);
+        _ln3(l.x1,0.05,l.y1, l.x2,0.05,l.y2, cx,cz, '#22D3EE', 3);
+        [_proj3(l.x1,0.05,l.y1,cx,cz), _proj3(l.x2,0.05,l.y2,cx,cz)].forEach(p => {
+            ctx3.beginPath(); ctx3.arc(p.sx,p.sy,3,0,Math.PI*2);
+            ctx3.fillStyle='#0891B2'; ctx3.fill();
+        });
+    });
+
+    // ─ บ่อพัก (สี่เหลี่ยมม่วง 0.5×0.5 บนพื้น) ─
+    const pits3D = mainApp.lines.filter(l => l.type === 'pit');
+    pits3D.forEach(pit => {
+        const h = 0.05, s = 0.25;
+        const corners = [
+            _proj3(pit.x-s,h,pit.y-s,cx,cz), _proj3(pit.x+s,h,pit.y-s,cx,cz),
+            _proj3(pit.x+s,h,pit.y+s,cx,cz), _proj3(pit.x-s,h,pit.y+s,cx,cz),
+        ];
+        ctx3.beginPath(); ctx3.moveTo(corners[0].sx,corners[0].sy);
+        corners.forEach(c => ctx3.lineTo(c.sx,c.sy));
+        ctx3.closePath();
+        ctx3.fillStyle='rgba(167,139,250,0.25)'; ctx3.fill();
+        ctx3.strokeStyle='#7C3AED'; ctx3.lineWidth=2;
+        ctx3.setLineDash([4,3]); ctx3.stroke(); ctx3.setLineDash([]);
+        const ctr = _proj3(pit.x,h,pit.y,cx,cz);
+        ctx3.font='bold 11px Sarabun'; ctx3.fillStyle='#A78BFA';
+        ctx3.textAlign='center'; ctx3.textBaseline='middle';
+        ctx3.fillText('บ่อพัก', ctr.sx, ctr.sy-10);
+    });
+}
+
+// Controls
+function rotL3(){_aY-=0.12;render3D();}
+function rotR3(){_aY+=0.12;render3D();}
+function tiltU3(){_aX-=0.08;render3D();}
+function tiltD3(){_aX+=0.08;render3D();}
+function zIn3(){_sc*=1.15;render3D();}
+function zOut3(){_sc/=1.15;render3D();}
+function rst3(){_aY=0.6;_aX=0.42;_sc=22;_offX3=0;_offY3=0;render3D();}
+
+// กลับกระดานวาด — global function ที่ปุ่ม back-to-canvas-btn ใน iso3d-header เรียก
+function backToCanvas() {
+    const wrapper = document.getElementById('app-wrapper');
+    wrapper.classList.remove('mode-3d');   // ออกจาก 3D — iso3d-panel กลับเข้า flow เดิมเอง (ไม่ได้ย้าย DOM)
+    const leftCol = document.getElementById('left-column');
+    // ดันตัว scroll หลักกลับขึ้นบนสุด → เห็นกระดานวาดทันที
+    if (leftCol) leftCol.scrollTop = 0;
+    setTimeout(() => {
+        if (leftCol) leftCol.scrollTop = 0;   // ย้ำหลัง layout reflow
+        if (mainApp) mainApp.resize();
+    }, 120);
+}
+
+// ปรับ canvas width ตามจอ
+function resize3D() {
+    if (!c3d) return;
+    const w = c3d.parentElement ? c3d.parentElement.clientWidth : 900;
+    c3d.width = Math.max(w, 600);
+    render3D();
+}
+window.addEventListener('resize', resize3D);
+setTimeout(resize3D, 100);
+
+if (c3d) {
+    c3d.addEventListener('mousedown', e => {
+        if (e.button === 2 || e.shiftKey) {
+            _pan3 = true; _px3 = e.clientX; _py3 = e.clientY;  // pan
+        } else {
+            _drag3 = true; _lx3 = e.clientX; _ly3 = e.clientY; // rotate
+        }
+    });
+    c3d.addEventListener('mousemove', e => {
+        if (_drag3) {
+            _aY += (e.clientX - _lx3) * 0.006;
+            _aX -= (e.clientY - _ly3) * 0.006;
+            _lx3 = e.clientX; _ly3 = e.clientY; render3D();
+        } else if (_pan3) {
+            _offX3 += (e.clientX - _px3);
+            _offY3 += (e.clientY - _py3);
+            _px3 = e.clientX; _py3 = e.clientY; render3D();
+        }
+    });
+    c3d.addEventListener('mouseup',   () => { _drag3 = false; _pan3 = false; });
+    c3d.addEventListener('mouseleave',() => { _drag3 = false; _pan3 = false; });
+    c3d.addEventListener('contextmenu', e => e.preventDefault()); // กัน right-click menu
+    c3d.addEventListener('wheel', e => { _sc *= e.deltaY < 0 ? 1.08 : 0.93; render3D(); }, { passive: true });
+}
+
+let _autoSaveTimer = null;
+function autoSaveToStorage() {
+    clearTimeout(_autoSaveTimer);
+    _autoSaveTimer = setTimeout(() => {
+        if (!mainApp) return;
+        _flushSave(false); // เรียก false เพื่อเซฟแค่ LocalStorage ป้องกันหน้าจอกระพริบ
+    }, 800);
+}
+
+(function() {
+    const handle = document.getElementById('resize-handle');
+    const container = document.getElementById('main-container');
+    if (!handle || !container) return;
+    let startY = 0, startH = 0, dragging = false;
+    handle.addEventListener('mousedown', e => {
+        dragging = true; startY = e.clientY; startH = container.offsetHeight;
+        document.body.style.userSelect = 'none'; document.body.style.cursor = 'ns-resize';
+    });
+    document.addEventListener('mousemove', e => {
+        if (!dragging) return;
+        container.style.height = Math.max(300, startH + (e.clientY - startY)) + 'px';
+        if (mainApp) mainApp.resize();
+    });
+    document.addEventListener('mouseup', () => {
+        if (!dragging) return; dragging = false;
+        document.body.style.userSelect = ''; document.body.style.cursor = '';
+    });
+})();
+</script>
+</body>
+</html>
+"""
+
+    # ── ขั้นตอน 1: สร้างโฟลเดอร์สำหรับ Custom Component ชั่วคราว (Native Streamlit Bridge) ──
+    bridge_dir = os.path.join(os.path.dirname(__file__), "..", "utils", "canvas_bridge")
+    os.makedirs(bridge_dir, exist_ok=True)
+    index_path = os.path.join(bridge_dir, "index.html")
+    
+    # เขียนไฟล์ HTML ลงไปเพื่อให้ Streamlit ดึงมาใช้เป็น Component ได้สมบูรณ์
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write(canvas_html)
+
+    # ── ขั้นตอน 2: ประกาศให้โฟลเดอร์นั้นเป็น Streamlit Component ──
+    canvas_comp = components.declare_component("canvas_bridge", path=bridge_dir)
+
+    # ── ขั้นตอน 3: สั่งรัน Component และแนบข้อมูลปัจจุบันเข้าไป ──
+    # ข้อดี: ส่งข้อมูลผ่าน args (Python -> JS) โดยตรง ไม่พึ่ง String Replacement และไม่ต้องพึ่ง URL
+    result = canvas_comp(
+        project_name=p["name"],
+        project_id=p["id"],
+        canvas_data=p.get("canvas_data", {}),
+        boq_roof_type=p.get("boq_roof_type", ""),
+        key=f"canvas_{p['id']}" # ใส่ Key เพื่อไม่ให้ Canvas ถูกรีเซ็ตตอนสลับหน้า
+    )
+
+    # ── ขั้นตอน 4: รับข้อมูลกลับมาจาก JS เมื่อมีการกดปุ่ม 💾 บันทึก ──
+    if result and isinstance(result, dict) and result.get("action") == "save":
+        new_canvas = result.get("canvas_data")
+        new_boq = result.get("boq")
+        image_3d_b64 = result.get("image_3d")
+        
+        # เซฟภาพ 3D ถ้าส่งกลับมา
+        if image_3d_b64 and "," in image_3d_b64:
+            try:
+                import base64
+                from utils.storage import _project_dir
+                img_data = base64.b64decode(image_3d_b64.split(",")[1])
+                photo_dir = _project_dir(p) / "photos"
+                photo_dir.mkdir(parents=True, exist_ok=True)
+                # ลบไฟล์เก่าออกก่อนถ้าชื่อเหมือนกัน
+                with open(photo_dir / "3D_Model.png", "wb") as f_img:
+                    f_img.write(img_data)
+            except Exception as _ex:
+                print(f"Error saving 3d image: {_ex}")
+
+        # ตรวจสอบว่าข้อมูลเปลี่ยนจริงไหม เพื่อป้องกันการเซฟและรีเฟรชตัวเองแบบลูปไม่รู้จบ (Infinite loop)
+        current_canvas_str = json.dumps(p.get("canvas_data", {}), sort_keys=True)
+        new_canvas_str = json.dumps(new_canvas, sort_keys=True)
+        
+        # บังคับเซฟเสมอ หรือตรวจเช็ค canvas
+        if current_canvas_str != new_canvas_str or image_3d_b64:
+            p["canvas_data"] = new_canvas
+            p["canvas_boq"] = new_boq
+            p["boq"] = None  # สั่งให้หน้า BOQ รู้ตัวว่าต้องคำนวณใหม่
+            save_project(p) # ฟังก์ชันนี้จะเซฟลง disk (.json) อัตโนมัติ
+            st.toast("✅ บันทึกแบบวาด + ภาพ 3D และ BOQ สำเร็จ!", icon="💾")
+
+    # ── แสดงสถานะด้านล่าง ──
+    st.markdown("---")
+    canvas_boq = p.get("canvas_boq")
+    if canvas_boq:
+        gl = canvas_boq.get("gutter_length", 0)
+        gp = canvas_boq.get("gutter_pieces", 0)
+        dp = canvas_boq.get("drain_points", 0)
+        st.success(
+            f"✅ BOQ sync แล้ว — ราง {gl} ม. ({gp} ท่อน) | ท่อลง {dp} จุด  "
+            f"→ ไปดูรายละเอียดที่หน้า BOQ ได้เลย"
+        )
+    else:
+        st.info("💡 เมื่อวาดเสร็จ ให้กดปุ่ม [ 💾 บันทึก ] ด้านบนขวาของกระดาน เพื่อย้ายข้อมูลเข้าสู่ระบบส่วนกลาง")
+
+    col1, col3 = st.columns(2)
+    with col1:
+        if st.button("📦 BOQ/รายการวัสดุ", use_container_width=True, type="primary"):
+            st.session_state.current_page = "boq"
+            st.rerun()
+    with col3:
+        if st.button("🏗️ กลับโปรเจกต์", use_container_width=True):
+            st.session_state.current_page = "home"
+            st.rerun()

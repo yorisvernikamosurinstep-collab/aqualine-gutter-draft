@@ -1,0 +1,15 @@
+[server]
+port = 8502
+maxUploadSize = 200
+enableWebsocketCompression = false
+# แอปถูกฝังใน iframe ของ GAS (cross-origin) → ต้องปิด XSRF/CORS
+# ไม่งั้น file_uploader โดนบล็อก (chip แดง ⊘) อัปโหลดรูปไม่ได้
+enableCORS = false
+enableXsrfProtection = false
+
+[theme]
+base = "light"
+primaryColor = "#1E3A8A"
+backgroundColor = "#F0F4FF"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#0D2144"
