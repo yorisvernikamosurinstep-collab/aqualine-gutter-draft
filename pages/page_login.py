@@ -489,9 +489,7 @@ def require_login():
                     "user_display": name,
                     "last_active":  time.time(),
                 })
-                # ล้าง query parameters เพื่อทำความสะอาด URL
-                # st.query_params.clear()
-                st.rerun()
+                # ไม่ rerun — session set แล้ว require_login จะผ่านต่อไปเอง
         except Exception as e:
             try:
                 with open("sso_error.txt", "a", encoding="utf-8") as error_file:
