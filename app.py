@@ -8,7 +8,7 @@ import subprocess, sys, os
 
 # ── ติดตั้ง Chromium binary ให้ Playwright (Streamlit Cloud ต้องการขั้นตอนนี้) ──
 # รันครั้งเดียวต่อ container lifetime; ถ้ามีแล้วจะเสร็จเร็วมาก
-_pw_flag = "/tmp/.pw_chromium_installed"
+_pw_flag = os.path.join(os.path.expanduser("~"), ".pw_chromium_installed")
 if not os.path.exists(_pw_flag):
     subprocess.run(
         [sys.executable, "-m", "playwright", "install", "chromium"],
